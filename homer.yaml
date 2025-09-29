@@ -58,20 +58,22 @@ spec:
                   set -e
                   apk add --no-cache bash jq coreutils kubectl >/dev/null 2>&1
 
-                  # Получаем список ingress с host и namespace
+                  # Получаем список ingress с host
                   kubectl get ingress -A -o json | jq -r '
                     .items[] |
-                    .metadata.name as $name |
-                    .metadata.namespace as $ns |
+                    (.metadata.name) as $name |
                     (.spec.rules[]?.host // empty) as $host |
+                    select($host != "") |
                     "- name: \($name)\n  url: http://\($host)\n  subtitle: Ingress\n  tag: k8s"
                   ' > /tmp/services.yml
 
                   # Генерим полный config.yml
-                  echo "title: \"K8s Services\"" > /tmp/config.yml
-                  echo "subtitle: \"Автоматически собранные ingress\"" >> /tmp/config.yml
-                  echo "services:" >> /tmp/config.yml
-                  sed 's/^/  /' /tmp/services.yml >> /tmp/config.yml
+                  {
+                    echo "title: \"K8s Services\""
+                    echo "subtitle: \"Автоматически собранные ingress\""
+                    echo "services:"
+                    sed 's/^/  /' /tmp/services.yml
+                  } > /tmp/config.yml
 
                   # Применяем ConfigMap
                   kubectl create configmap homer-config \

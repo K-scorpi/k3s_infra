@@ -5,16 +5,77 @@ metadata:
   name: homer
 ---
 apiVersion: v1
-kind: ConfigMap
+kind: ServiceAccount
 metadata:
-  name: homer-config
+  name: homer-config-writer
   namespace: homer
-data:
-  config.yml: |
-    title: "Cluster Home"
-    subtitle: "Автогенерация по ingress"
-    columns: 3
-    services: []
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: homer-config-reader
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "list", "watch", "update", "patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: homer-config-writer-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: homer-config-reader
+subjects:
+  - kind: ServiceAccount
+    name: homer-config-writer
+    namespace: homer
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: homer-config-gen
+  namespace: homer
+spec:
+  schedule: "*/30 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: homer-config-writer
+          restartPolicy: OnFailure
+          containers:
+            - name: generator
+              image: alpine:3.20
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  apk add --no-cache bash jq coreutils kubectl >/dev/null 2>&1
+
+                  kubectl get ingress -A -o json | jq -r '
+                    .items[] |
+                    .metadata.name as $name |
+                    .metadata.namespace as $ns |
+                    (.spec.rules[]?.host // "no-host") as $host |
+                    "- name: \($name) (\($ns))\n  url: http://\($host)\n  subtitle: Ingress\n  tag: k8s\n"
+                  ' > /tmp/services.yml
+
+                  cat <<EOF > /tmp/config.yml
+                  title: "K8s Services"
+                  subtitle: "Автоматически собранные ingress"
+                  services:
+                  $(cat /tmp/services.yml | sed 's/^/  /')
+                  EOF
+
+                  kubectl create configmap homer-config \
+                    --from-file=config.yml=/tmp/config.yml \
+                    -o yaml --dry-run=client | kubectl apply -f -
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -32,18 +93,18 @@ spec:
         app: homer
     spec:
       containers:
-      - name: homer
-        image: b4bz/homer:latest
-        ports:
-        - containerPort: 8080
-        volumeMounts:
-        - name: config
-          mountPath: /www/assets/config.yml
-          subPath: config.yml
+        - name: homer
+          image: b4bz/homer:latest
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: config
+              mountPath: /www/assets/config.yml
+              subPath: config.yml
       volumes:
-      - name: config
-        configMap:
-          name: homer-config
+        - name: config
+          configMap:
+            name: homer-config
 ---
 apiVersion: v1
 kind: Service
@@ -54,60 +115,27 @@ spec:
   selector:
     app: homer
   ports:
-  - port: 80
-    targetPort: 8080
+    - port: 80
+      targetPort: 8080
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: homer
+  name: homer-ingress
   namespace: homer
   annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
     nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
+  ingressClassName: nginx
   rules:
-  - host: start.home
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: homer
-            port:
-              number: 80
----
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: homer-config-gen
-  namespace: homer
-spec:
-  schedule: "*/5 * * * *" # каждые 5 минут
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          serviceAccountName: default
-          restartPolicy: OnFailure
-          containers:
-          - name: generator
-            image: bitnami/kubectl:latest
-            command: ["/bin/sh", "-c"]
-            args:
-              - |
-                apk add --no-cache jq curl >/dev/null 2>&1 || true
-
-                cat <<EOF > /tmp/config.yml
-                title: "Cluster Home"
-                subtitle: "Автогенерация по ingress"
-                columns: 3
-                services:
-                EOF
-
-                kubectl get ingress -A -o json | jq -r '
-                  .items[] |
-                  "  - name: \"" + .metadata.name + " (" + .metadata.namespace + ")\"\n    items:\n      - name: \"" + .metadata.name + "\"\n        url: \"http://" + .spec.rules[0].host + "\""
-                ' >> /tmp/config.yml
-
-                kubectl create configmap homer-config --from-file=config.yml=/tmp/config.yml -n homer -o yaml --dry-run=client | kubectl apply -f -
+    - host: start.home
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: homer
+                port:
+                  number: 80

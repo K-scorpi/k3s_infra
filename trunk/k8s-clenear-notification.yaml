@@ -1,0 +1,22 @@
+---
+apiVersion: apps.projectsveltos.io/v1alpha1
+kind: Cleaner
+metadata:
+  name: cleaner-with-telegram-notifications
+spec:
+  schedule: "0 * * * *"
+  action: Delete # Delete matching resources
+  resourcePolicySet:
+    resourceSelectors:
+    - namespace: test
+      kind: Deployment
+      group: "apps"
+      version: v1
+  notifications:
+  - name: telegram
+    type: Telegram
+    notificationRef:
+      apiVersion: v1
+      kind: Secret
+      name: telegram
+      namespace: default

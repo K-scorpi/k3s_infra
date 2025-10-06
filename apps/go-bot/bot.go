@@ -70,9 +70,14 @@ func main() {
 			args = update.Message.CommandArguments()
 		} else if update.CallbackQuery != nil {
 			chatID = update.CallbackQuery.Message.Chat.ID
-			cmd = update.CallbackQuery.Data
+			parts := strings.Fields(update.CallbackQuery.Data) // разбиваем по пробелам
+			if len(parts) > 0 {
+				cmd = parts[0]
+				if len(parts) > 1 {
+					args = strings.Join(parts[1:], " ")
+				}
+			}
 
-			// Ответ на CallbackQuery
 			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "Обработка...")
 			if _, err := bot.Request(callback); err != nil {
 				log.Printf("Ошибка callback: %v", err)

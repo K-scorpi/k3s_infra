@@ -19,7 +19,7 @@ func sendLong(bot *tgbotapi.BotAPI, chatID int64, txt string) {
 		sendText(bot, chatID, "```\n"+txt+"\n```")
 		return
 	}
-	tmp := "/tmp/log.txt"
+	tmp := os.TempDir() + "/output.txt"
 	_ = os.WriteFile(tmp, []byte(txt), 0644)
 	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(tmp))
 	doc.Caption = "Результат (файл)"

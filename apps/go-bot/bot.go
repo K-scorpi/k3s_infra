@@ -89,43 +89,17 @@ func main() {
 
 		switch cmd {
 		case "start", "help":
-			sendText(bot, chatID, helpTextWithButtons())
+			sendHelpWithButtons(bot, chatID)
 
 		case "status":
-			nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-			if err != nil {
-				sendText(bot, chatID, "Error listing nodes: "+err.Error())
-				continue
-			}
-			var sb strings.Builder
-			sb.WriteString("📡 Nodes:\n")
-			for _, n := range nodes.Items {
-				ready := "NotReady"
-				for _, c := range n.Status.Conditions {
-					if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
-						ready = "Ready"
-					}
-				}
-				sb.WriteString(fmt.Sprintf("- %s — %s\n", n.Name, ready))
-			}
-			sendLong(bot, chatID, sb.String())
+			handleStatus(bot, clientset, ctx, chatID)
 
 		case "getpods":
 			ns := strings.TrimSpace(args)
 			if ns == "" {
 				ns = "default"
 			}
-			pods, err := clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
-			if err != nil {
-				sendText(bot, chatID, "Error listing pods: "+err.Error())
-				continue
-			}
-			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("📦 *Pods in namespace* `%s`:\n", ns))
-			for _, p := range pods.Items {
-				sb.WriteString(fmt.Sprintf("- %s (%s)\n", p.Name, p.Status.Phase))
-			}
-			sendLong(bot, chatID, sb.String())
+			handleGetPods(bot, clientset, ctx, chatID, ns)
 
 		case "logs":
 			// usage: /logs <namespace> <pod> [tail]
@@ -141,24 +115,7 @@ func main() {
 					tail = int64(t)
 				}
 			}
-			opts := &corev1.PodLogOptions{TailLines: &tail}
-			req := clientset.CoreV1().Pods(ns).GetLogs(pod, opts)
-			stream, err := req.Stream(ctx)
-			if err != nil {
-				sendText(bot, chatID, "Error getting logs: "+err.Error())
-				continue
-			}
-			data, err := io.ReadAll(stream)
-			stream.Close()
-			if err != nil {
-				sendText(bot, chatID, "Error reading logs: "+err.Error())
-				continue
-			}
-			if len(data) == 0 {
-				sendText(bot, chatID, "Logs empty")
-				continue
-			}
-			sendLong(bot, chatID, string(data))
+			handleLogs(bot, clientset, ctx, chatID, ns, pod, tail)
 
 		case "restart":
 			// usage: /restart <namespace> <deployment>
@@ -167,15 +124,7 @@ func main() {
 				sendText(bot, chatID, "Usage: /restart <namespace> <deployment>")
 				continue
 			}
-			ns, dep := parts[0], parts[1]
-			now := time.Now().Format(time.RFC3339)
-			patch := []byte(fmt.Sprintf(`{"spec":{"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/restartedAt":"%s"}}}}}`, now))
-			_, err := clientset.AppsV1().Deployments(ns).Patch(ctx, dep, types.StrategicMergePatchType, patch, metav1.PatchOptions{})
-			if err != nil {
-				sendText(bot, chatID, "Error restarting deployment: "+err.Error())
-				continue
-			}
-			sendText(bot, chatID, fmt.Sprintf("✅ Deployment %s/%s restarted", ns, dep))
+			handleRestart(bot, clientset, ctx, chatID, parts[0], parts[1])
 
 		case "scale":
 			// usage: /scale <namespace> <deployment> <replicas>
@@ -184,25 +133,7 @@ func main() {
 				sendText(bot, chatID, "Usage: /scale <namespace> <deployment> <replicas>")
 				continue
 			}
-			ns, dep := parts[0], parts[1]
-			rep, err := strconv.Atoi(parts[2])
-			if err != nil {
-				sendText(bot, chatID, "replicas must be a number")
-				continue
-			}
-			d, err := clientset.AppsV1().Deployments(ns).Get(ctx, dep, metav1.GetOptions{})
-			if err != nil {
-				sendText(bot, chatID, "Get deployment: "+err.Error())
-				continue
-			}
-			r := int32(rep)
-			d.Spec.Replicas = &r
-			_, err = clientset.AppsV1().Deployments(ns).Update(ctx, d, metav1.UpdateOptions{})
-			if err != nil {
-				sendText(bot, chatID, "Scale error: "+err.Error())
-				continue
-			}
-			sendText(bot, chatID, fmt.Sprintf("✅ Scaled %s/%s -> %d replicas", ns, dep, rep))
+			handleScale(bot, clientset, ctx, chatID, parts[0], parts[1], parts[2])
 
 		default:
 			// fallback: show help
@@ -211,8 +142,9 @@ func main() {
 	}
 }
 
-func helpTextWithButtons() string {
-	return `Commands:
+// --- Button helpers ---
+func sendHelpWithButtons(bot *tgbotapi.BotAPI, chatID int64) {
+	text := `Commands:
 /help — this help
 /status — list nodes
 /getpods <namespace> — list pods
@@ -220,9 +152,108 @@ func helpTextWithButtons() string {
 /restart <namespace> <deployment> — restart deployment
 /scale <namespace> <deployment> <replicas> — scale deployment
 
-Use buttons for quick actions.`
+Quick actions via buttons:`
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Status Nodes", "status"),
+			tgbotapi.NewInlineKeyboardButtonData("List Pods", "getpods default"),
+		),
+	)
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ReplyMarkup = keyboard
+	msg.ParseMode = "Markdown"
+	bot.Send(msg)
 }
 
+// --- Handlers ---
+func handleStatus(bot *tgbotapi.BotAPI, clientset *kubernetes.Clientset, ctx context.Context, chatID int64) {
+	nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		sendText(bot, chatID, "Error listing nodes: "+err.Error())
+		return
+	}
+	var sb strings.Builder
+	sb.WriteString("📡 Nodes:\n")
+	for _, n := range nodes.Items {
+		ready := "NotReady"
+		for _, c := range n.Status.Conditions {
+			if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
+				ready = "Ready"
+			}
+		}
+		sb.WriteString(fmt.Sprintf("- %s — %s\n", n.Name, ready))
+	}
+	sendLong(bot, chatID, sb.String())
+}
+
+func handleGetPods(bot *tgbotapi.BotAPI, clientset *kubernetes.Clientset, ctx context.Context, chatID int64, ns string) {
+	pods, err := clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		sendText(bot, chatID, "Error listing pods: "+err.Error())
+		return
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📦 Pods in namespace `%s`:\n", ns))
+	for _, p := range pods.Items {
+		sb.WriteString(fmt.Sprintf("- %s (%s)\n", p.Name, p.Status.Phase))
+	}
+	sendLong(bot, chatID, sb.String())
+}
+
+func handleLogs(bot *tgbotapi.BotAPI, clientset *kubernetes.Clientset, ctx context.Context, chatID int64, ns, pod string, tail int64) {
+	opts := &corev1.PodLogOptions{TailLines: &tail}
+	req := clientset.CoreV1().Pods(ns).GetLogs(pod, opts)
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		sendText(bot, chatID, "Error getting logs: "+err.Error())
+		return
+	}
+	data, err := io.ReadAll(stream)
+	stream.Close()
+	if err != nil {
+		sendText(bot, chatID, "Error reading logs: "+err.Error())
+		return
+	}
+	if len(data) == 0 {
+		sendText(bot, chatID, "Logs empty")
+		return
+	}
+	sendLong(bot, chatID, string(data))
+}
+
+func handleRestart(bot *tgbotapi.BotAPI, clientset *kubernetes.Clientset, ctx context.Context, chatID int64, ns, dep string) {
+	now := time.Now().Format(time.RFC3339)
+	patch := []byte(fmt.Sprintf(`{"spec":{"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/restartedAt":"%s"}}}}}`, now))
+	_, err := clientset.AppsV1().Deployments(ns).Patch(ctx, dep, types.StrategicMergePatchType, patch, metav1.PatchOptions{})
+	if err != nil {
+		sendText(bot, chatID, "Error restarting deployment: "+err.Error())
+		return
+	}
+	sendText(bot, chatID, fmt.Sprintf("✅ Deployment %s/%s restarted", ns, dep))
+}
+
+func handleScale(bot *tgbotapi.BotAPI, clientset *kubernetes.Clientset, ctx context.Context, chatID int64, ns, dep, repStr string) {
+	rep, err := strconv.Atoi(repStr)
+	if err != nil {
+		sendText(bot, chatID, "Replicas must be a number")
+		return
+	}
+	d, err := clientset.AppsV1().Deployments(ns).Get(ctx, dep, metav1.GetOptions{})
+	if err != nil {
+		sendText(bot, chatID, "Get deployment: "+err.Error())
+		return
+	}
+	r := int32(rep)
+	d.Spec.Replicas = &r
+	_, err = clientset.AppsV1().Deployments(ns).Update(ctx, d, metav1.UpdateOptions{})
+	if err != nil {
+		sendText(bot, chatID, "Scale error: "+err.Error())
+		return
+	}
+	sendText(bot, chatID, fmt.Sprintf("✅ Scaled %s/%s -> %d replicas", ns, dep, rep))
+}
+
+// --- Send helpers ---
 func sendText(bot *tgbotapi.BotAPI, chatID int64, txt string) {
 	msg := tgbotapi.NewMessage(chatID, txt)
 	msg.ParseMode = "Markdown"

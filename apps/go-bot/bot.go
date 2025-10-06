@@ -28,7 +28,7 @@ func main() {
 
 	// Optional admin chat id to restrict control (set numeric chat id)
 	var adminID int64 = 0
-	if v := os.Getenv("TELEGRAM_ADMIN_ID"); v != "" {
+	if v := os.Getenv("TELEGRAM_CHAT_ID"); v != "" {
 		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
 			adminID = id
 		}
@@ -51,32 +51,45 @@ func main() {
 		log.Fatalf("kubernetes client: %v", err)
 	}
 
+	ctx := context.Background()
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
-	ctx := context.Background()
 
 	for update := range updates {
-		if update.Message == nil {
+		if update.Message == nil && update.CallbackQuery == nil {
 			continue
 		}
-		chatID := update.Message.Chat.ID
-		//text := update.Message.Text
-		cmd := update.Message.Command()
-		args := update.Message.CommandArguments()
 
-		// Allow everyone /help and /start; restrict powerful commands if adminID is set
+		var chatID int64
+		var cmd, args string
+
+		if update.Message != nil {
+			chatID = update.Message.Chat.ID
+			cmd = update.Message.Command()
+			args = update.Message.CommandArguments()
+		} else if update.CallbackQuery != nil {
+			chatID = update.CallbackQuery.Message.Chat.ID
+			cmd = update.CallbackQuery.Data
+
+			// v5 workaround: AnswerCallbackQuery через bot.Request
+			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "Processing...")
+			if _, err := bot.Request(callback); err != nil {
+				log.Printf("callback error: %v", err)
+			}
+		}
+
 		if adminID != 0 && chatID != adminID {
 			// allow only info commands for non-admins
 			if cmd != "help" && cmd != "start" && cmd != "status" && cmd != "getpods" {
-				bot.Send(tgbotapi.NewMessage(chatID, "Access denied. Contact admin."))
+				sendText(bot, chatID, "❌ Access denied. Contact admin.")
 				continue
 			}
 		}
 
 		switch cmd {
 		case "start", "help":
-			sendText(bot, chatID, helpText())
+			sendText(bot, chatID, helpTextWithButtons())
 
 		case "status":
 			nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
@@ -89,15 +102,13 @@ func main() {
 			for _, n := range nodes.Items {
 				ready := "NotReady"
 				for _, c := range n.Status.Conditions {
-					if c.Type == corev1.NodeReady {
-						if c.Status == corev1.ConditionTrue {
-							ready = "Ready"
-						}
+					if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
+						ready = "Ready"
 					}
 				}
 				sb.WriteString(fmt.Sprintf("- %s — %s\n", n.Name, ready))
 			}
-			sendText(bot, chatID, sb.String())
+			sendLong(bot, chatID, sb.String())
 
 		case "getpods":
 			ns := strings.TrimSpace(args)
@@ -110,9 +121,9 @@ func main() {
 				continue
 			}
 			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("Pods in namespace %s:\n", ns))
+			sb.WriteString(fmt.Sprintf("📦 *Pods in namespace* `%s`:\n", ns))
 			for _, p := range pods.Items {
-				sb.WriteString(fmt.Sprintf("- %s  (%s)\n", p.Name, p.Status.Phase))
+				sb.WriteString(fmt.Sprintf("- %s (%s)\n", p.Name, p.Status.Phase))
 			}
 			sendLong(bot, chatID, sb.String())
 
@@ -164,7 +175,7 @@ func main() {
 				sendText(bot, chatID, "Error restarting deployment: "+err.Error())
 				continue
 			}
-			sendText(bot, chatID, fmt.Sprintf("Deployment %s/%s restarted (annotation restartedAt=%s)", ns, dep, now))
+			sendText(bot, chatID, fmt.Sprintf("✅ Deployment %s/%s restarted", ns, dep))
 
 		case "scale":
 			// usage: /scale <namespace> <deployment> <replicas>
@@ -191,7 +202,7 @@ func main() {
 				sendText(bot, chatID, "Scale error: "+err.Error())
 				continue
 			}
-			sendText(bot, chatID, fmt.Sprintf("Scaled %s/%s -> %d replicas", ns, dep, rep))
+			sendText(bot, chatID, fmt.Sprintf("✅ Scaled %s/%s -> %d replicas", ns, dep, rep))
 
 		default:
 			// fallback: show help
@@ -200,14 +211,16 @@ func main() {
 	}
 }
 
-func helpText() string {
+func helpTextWithButtons() string {
 	return `Commands:
 /help — this help
 /status — list nodes
-/getpods <namespace> — list pods in namespace (default: default)
+/getpods <namespace> — list pods
 /logs <namespace> <pod> [tail] — get pod logs
-/restart <namespace> <deployment> — restart deployment (rollout restart)
-/scale <namespace> <deployment> <replicas> — scale deployment`
+/restart <namespace> <deployment> — restart deployment
+/scale <namespace> <deployment> <replicas> — scale deployment
+
+Use buttons for quick actions.`
 }
 
 func sendText(bot *tgbotapi.BotAPI, chatID int64, txt string) {

@@ -18,15 +18,15 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-const MaxMsgLen = 3800 // safety below Telegram limit
+const MaxMsgLen = 3800 // безопасно ниже лимита Telegram
 
 func main() {
 	token := os.Getenv("TELEGRAM_BOT_TOKEN")
 	if token == "" {
-		log.Fatal("TELEGRAM_BOT_TOKEN is not set")
+		log.Fatal("TELEGRAM_BOT_TOKEN не установлен")
 	}
 
-	// Optional admin chat id to restrict control (set numeric chat id)
+	// Проверка разрешённого чата
 	var adminID int64 = 0
 	if v := os.Getenv("TELEGRAM_CHAT_ID"); v != "" {
 		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
@@ -36,19 +36,19 @@ func main() {
 
 	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
-		log.Fatalf("telegram bot init: %v", err)
+		log.Fatalf("Ошибка инициализации бота: %v", err)
 	}
 	bot.Debug = false
-	log.Printf("Bot authorized: %s", bot.Self.UserName)
+	log.Printf("Бот авторизован: %s", bot.Self.UserName)
 
-	// k8s client (in-cluster)
+	// k8s клиент (in-cluster)
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
-		log.Fatalf("in-cluster config: %v", err)
+		log.Fatalf("Ошибка конфигурации Kubernetes: %v", err)
 	}
 	clientset, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		log.Fatalf("kubernetes client: %v", err)
+		log.Fatalf("Ошибка создания клиента Kubernetes: %v", err)
 	}
 
 	ctx := context.Background()
@@ -72,17 +72,17 @@ func main() {
 			chatID = update.CallbackQuery.Message.Chat.ID
 			cmd = update.CallbackQuery.Data
 
-			// v5 workaround: AnswerCallbackQuery через bot.Request
-			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "Processing...")
+			// Ответ на CallbackQuery
+			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "Обработка...")
 			if _, err := bot.Request(callback); err != nil {
-				log.Printf("callback error: %v", err)
+				log.Printf("Ошибка callback: %v", err)
 			}
 		}
 
 		if adminID != 0 && chatID != adminID {
 			// allow only info commands for non-admins
 			if cmd != "help" && cmd != "start" && cmd != "status" && cmd != "getpods" {
-				sendText(bot, chatID, "❌ Access denied. Contact admin.")
+				sendText(bot, chatID, "❌ Доступ запрещён. Свяжитесь с администратором.")
 				continue
 			}
 		}
@@ -105,7 +105,7 @@ func main() {
 			// usage: /logs <namespace> <pod> [tail]
 			parts := strings.Fields(args)
 			if len(parts) < 2 {
-				sendText(bot, chatID, "Usage: /logs <namespace> <pod> [tail-lines]")
+				sendText(bot, chatID, "Использование: /logs <namespace> <pod> [кол-во строк]")
 				continue
 			}
 			ns, pod := parts[0], parts[1]
@@ -121,7 +121,7 @@ func main() {
 			// usage: /restart <namespace> <deployment>
 			parts := strings.Fields(args)
 			if len(parts) != 2 {
-				sendText(bot, chatID, "Usage: /restart <namespace> <deployment>")
+				sendText(bot, chatID, "Использование: /restart <namespace> <deployment>")
 				continue
 			}
 			handleRestart(bot, clientset, ctx, chatID, parts[0], parts[1])
@@ -130,7 +130,7 @@ func main() {
 			// usage: /scale <namespace> <deployment> <replicas>
 			parts := strings.Fields(args)
 			if len(parts) != 3 {
-				sendText(bot, chatID, "Usage: /scale <namespace> <deployment> <replicas>")
+				sendText(bot, chatID, "Использование: /scale <namespace> <deployment> <реплики>")
 				continue
 			}
 			handleScale(bot, clientset, ctx, chatID, parts[0], parts[1], parts[2])
@@ -144,19 +144,19 @@ func main() {
 
 // --- Button helpers ---
 func sendHelpWithButtons(bot *tgbotapi.BotAPI, chatID int64) {
-	text := `Commands:
-/help — this help
-/status — list nodes
-/getpods <namespace> — list pods
-/logs <namespace> <pod> [tail] — get pod logs
-/restart <namespace> <deployment> — restart deployment
-/scale <namespace> <deployment> <replicas> — scale deployment
+	text := `Команды:
+/help — помощь
+/status — список узлов
+/getpods <namespace> — список pod-ов
+/logs <namespace> <pod> [кол-во строк] — логи pod-а
+/restart <namespace> <deployment> — перезапуск deployment
+/scale <namespace> <deployment> <реплики> — масштабирование deployment
 
-Quick actions via buttons:`
+Быстрые действия через кнопки:`
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Status Nodes", "status"),
-			tgbotapi.NewInlineKeyboardButtonData("List Pods", "getpods default"),
+			tgbotapi.NewInlineKeyboardButtonData("Статус узлов", "status"),
+			tgbotapi.NewInlineKeyboardButtonData("Список pod-ов", "getpods default"),
 		),
 	)
 	msg := tgbotapi.NewMessage(chatID, text)
@@ -169,7 +169,7 @@ Quick actions via buttons:`
 func handleStatus(bot *tgbotapi.BotAPI, clientset *kubernetes.Clientset, ctx context.Context, chatID int64) {
 	nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
-		sendText(bot, chatID, "Error listing nodes: "+err.Error())
+		sendText(bot, chatID, "Ошибка получения списка узлов: "+err.Error())
 		return
 	}
 	var sb strings.Builder
@@ -189,11 +189,11 @@ func handleStatus(bot *tgbotapi.BotAPI, clientset *kubernetes.Clientset, ctx con
 func handleGetPods(bot *tgbotapi.BotAPI, clientset *kubernetes.Clientset, ctx context.Context, chatID int64, ns string) {
 	pods, err := clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		sendText(bot, chatID, "Error listing pods: "+err.Error())
+		sendText(bot, chatID, "Ошибка получения pod-ов: "+err.Error())
 		return
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📦 Pods in namespace `%s`:\n", ns))
+	sb.WriteString(fmt.Sprintf("📦 Pod-ы в namespace `%s`:\n", ns))
 	for _, p := range pods.Items {
 		sb.WriteString(fmt.Sprintf("- %s (%s)\n", p.Name, p.Status.Phase))
 	}
@@ -205,17 +205,17 @@ func handleLogs(bot *tgbotapi.BotAPI, clientset *kubernetes.Clientset, ctx conte
 	req := clientset.CoreV1().Pods(ns).GetLogs(pod, opts)
 	stream, err := req.Stream(ctx)
 	if err != nil {
-		sendText(bot, chatID, "Error getting logs: "+err.Error())
+		sendText(bot, chatID, "Ошибка получения логов: "+err.Error())
 		return
 	}
 	data, err := io.ReadAll(stream)
 	stream.Close()
 	if err != nil {
-		sendText(bot, chatID, "Error reading logs: "+err.Error())
+		sendText(bot, chatID, "Ошибка чтения логов: "+err.Error())
 		return
 	}
 	if len(data) == 0 {
-		sendText(bot, chatID, "Logs empty")
+		sendText(bot, chatID, "Логи пустые")
 		return
 	}
 	sendLong(bot, chatID, string(data))
@@ -226,34 +226,34 @@ func handleRestart(bot *tgbotapi.BotAPI, clientset *kubernetes.Clientset, ctx co
 	patch := []byte(fmt.Sprintf(`{"spec":{"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/restartedAt":"%s"}}}}}`, now))
 	_, err := clientset.AppsV1().Deployments(ns).Patch(ctx, dep, types.StrategicMergePatchType, patch, metav1.PatchOptions{})
 	if err != nil {
-		sendText(bot, chatID, "Error restarting deployment: "+err.Error())
+		sendText(bot, chatID, "Ошибка перезапуска deployment: "+err.Error())
 		return
 	}
-	sendText(bot, chatID, fmt.Sprintf("✅ Deployment %s/%s restarted", ns, dep))
+	sendText(bot, chatID, fmt.Sprintf("✅ Deployment %s/%s перезапущен", ns, dep))
 }
 
 func handleScale(bot *tgbotapi.BotAPI, clientset *kubernetes.Clientset, ctx context.Context, chatID int64, ns, dep, repStr string) {
 	rep, err := strconv.Atoi(repStr)
 	if err != nil {
-		sendText(bot, chatID, "Replicas must be a number")
+		sendText(bot, chatID, "Количество реплик должно быть числом")
 		return
 	}
 	d, err := clientset.AppsV1().Deployments(ns).Get(ctx, dep, metav1.GetOptions{})
 	if err != nil {
-		sendText(bot, chatID, "Get deployment: "+err.Error())
+		sendText(bot, chatID, "Ошибка получения deployment: "+err.Error())
 		return
 	}
 	r := int32(rep)
 	d.Spec.Replicas = &r
 	_, err = clientset.AppsV1().Deployments(ns).Update(ctx, d, metav1.UpdateOptions{})
 	if err != nil {
-		sendText(bot, chatID, "Scale error: "+err.Error())
+		sendText(bot, chatID, "Ошибка масштабирования: "+err.Error())
 		return
 	}
-	sendText(bot, chatID, fmt.Sprintf("✅ Scaled %s/%s -> %d replicas", ns, dep, rep))
+	sendText(bot, chatID, fmt.Sprintf("✅ Deployment %s/%s масштабирован до %d реплик", ns, dep, rep))
 }
 
-// --- Send helpers ---
+// --- Отправка сообщений ---
 func sendText(bot *tgbotapi.BotAPI, chatID int64, txt string) {
 	msg := tgbotapi.NewMessage(chatID, txt)
 	msg.ParseMode = "Markdown"
@@ -269,7 +269,7 @@ func sendLong(bot *tgbotapi.BotAPI, chatID int64, txt string) {
 	tmp := "/tmp/log.txt"
 	_ = os.WriteFile(tmp, []byte(txt), 0644)
 	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(tmp))
-	doc.Caption = "Output (file)"
+	doc.Caption = "Результат (файл)"
 	bot.Send(doc)
 	_ = os.Remove(tmp)
 }

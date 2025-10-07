@@ -15,7 +15,7 @@ metadata:
   name: telegram-bot-role
 rules:
   - apiGroups: [""]
-    resources: ["namespaces", "pods", "pods/log", "services"]
+    resources: ["namespaces", "pods", "pods/log", "services", "nodes"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments"]

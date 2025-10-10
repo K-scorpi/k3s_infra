@@ -1,4 +1,4 @@
-name: CI - Security Scan
+name: CI - Security & Kubernetes Validation
 
 on:
   push:
@@ -12,33 +12,64 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Run Trivy vulnerability scanner
-      uses: aquasecurity/trivy-action@master
-      with:
-        scan-type: 'fs'
-        scan-ref: '.'
-        exit-code: 0  # Не прерывать workflow при найденных уязвимостях
-        format: 'table'  # Простой вывод в лог
-        output: 'trivy-results.txt'
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          exit-code: 0  # Не прерывать workflow при найденных уязвимостях
+          format: 'table'  # Простой вывод в лог
+          output: 'trivy-results.txt'
 
-    - name: Show Trivy results
-      if: always()
-      run: |
-        if [ -f "trivy-results.txt" ]; then
-          echo "=== Trivy Scan Results ==="
-          cat trivy-results.txt
-        else
-          echo "No Trivy results file found"
-        fi
+      - name: Show Trivy results
+        if: always()
+        run: |
+          if [ -f "trivy-results.txt" ]; then
+            echo "=== Trivy Scan Results ==="
+            cat trivy-results.txt
+          else
+            echo "No Trivy results file found"
+          fi
 
-    - name: Scan Dockerfile
-      if: hashFiles('Dockerfile') != ''
-      uses: aquasecurity/trivy-action@master
-      with:
-        scan-type: 'config'
-        scan-ref: '.'
-        exit-code: 0
-        format: 'table'
+      - name: Scan Dockerfile
+        if: hashFiles('Dockerfile') != ''
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          exit-code: 0
+          format: 'table'
+
+  k8s-validate:
+    name: Kubernetes Manifest Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.30.0'  # или latest
+
+      - name: Validate Kubernetes manifests (dry-run)
+        run: |
+          echo "🔍 Validating Kubernetes YAML manifests..."
+
+          # Найти все .yaml, исключая секреты, бинарники, values и не-K8s файлы
+          while IFS= read -r -d '' file; do
+            echo "✅ Validating $file"
+            kubectl apply --dry-run=client -f "$file" --validate=false
+          done < <(find . -name "*.yaml" \
+                     -not -path "./secret/*" \
+                     -not -path "./velero/credentials-velero" \
+                     -not -path "*/kgctl-*" \
+                     -not -name "*values.yaml" \
+                     -not -name "*peer*.yaml" \
+                     -not -name "k3s.yaml" \
+                     -print0)
+
+          echo "✅ All Kubernetes manifests passed dry-run validation"

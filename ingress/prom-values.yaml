@@ -1,8 +1,0 @@
-server:
-  ingress:
-    enabled: true
-    hosts:
-      - prometheus.home
-    ingressClassName: nginx
-    annotations:
-      nginx.ingress.kubernetes.io/ssl-redirect: "false"

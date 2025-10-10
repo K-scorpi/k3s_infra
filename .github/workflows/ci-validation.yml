@@ -50,19 +50,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up kubectl
-        uses: azure/setup-kubectl@v4
-        with:
-          version: 'v1.30.0'  # или latest
+      - name: Install kubeval
+        run: |
+          wget -q https://github.com/instrumenta/kubeval/releases/latest/download/kubeval-linux-amd64.tar.gz
+          tar -xzf kubeval-linux-amd64.tar.gz
+          sudo mv kubeval /usr/local/bin/
 
       - name: Validate Kubernetes manifests (dry-run)
         run: |
           echo "🔍 Validating Kubernetes YAML manifests..."
 
-          # Найти все .yaml, исключая секреты, бинарники, values и не-K8s файлы
           while IFS= read -r -d '' file; do
             echo "✅ Validating $file"
-            kubectl apply --dry-run=client -f "$file" --validate=false
+            kubeval --strict --ignore-missing-schemas "$file"
           done < <(find . -name "*.yaml" \
                      -not -path "./secret/*" \
                      -not -path "./velero/credentials-velero" \

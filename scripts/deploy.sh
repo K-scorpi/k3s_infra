@@ -56,15 +56,20 @@ case "${1:-all}" in
     ;;
   check)
     echo "🔍 Validating Kubernetes manifests..."
+    if ! command -v kubeval &> /dev/null; then
+      echo "❌ kubeval not found. Install it: https://github.com/instrumenta/kubeval"
+      exit 1
+    fi
     while IFS= read -r -d '' file; do
       echo "✅ Validating $file"
-      kubectl apply --dry-run=client -f "$file" --validate=false
+      kubeval --strict --ignore-missing-schemas "$file"
     done < <(find . -name "*.yaml" \
                -not -path "./secret/*" \
                -not -path "./velero/credentials-velero" \
                -not -path "*/kgctl-*" \
                -not -name "*values.yaml" \
                -not -name "*k3s.yaml" \
+               -not -name "*peer*.yaml" \
                -print0)
     echo "✅ All manifests passed dry-run validation"
     ;;

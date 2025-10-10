@@ -1,0 +1,44 @@
+name: CI - Security Scan
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        exit-code: 0  # Не прерывать workflow при найденных уязвимостях
+        format: 'table'  # Простой вывод в лог
+        output: 'trivy-results.txt'
+
+    - name: Show Trivy results
+      if: always()
+      run: |
+        if [ -f "trivy-results.txt" ]; then
+          echo "=== Trivy Scan Results ==="
+          cat trivy-results.txt
+        else
+          echo "No Trivy results file found"
+        fi
+
+    - name: Scan Dockerfile
+      if: hashFiles('Dockerfile') != ''
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'config'
+        scan-ref: '.'
+        exit-code: 0
+        format: 'table'

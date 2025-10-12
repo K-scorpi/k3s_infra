@@ -91,10 +91,10 @@ jobs:
       - name: Deploy manifests
         run: |
           kubectl create namespace ci-test || true
-          kubectl apply -f $(find ./kuber/ -name '*.yaml') --namespace ci-test
+          find ./kuber/ -name '*.yaml' | xargs -n 1 kubectl apply -n ci-test -f
 
       - name: Wait for pods
-        run: kubectl wait --for=condition=Ready pods --all --namespace ci-test --timeout=120s
+        run: kubectl wait --for=condition=Ready pods --all --namespace ci-test --timeout=30s
 
       - name: Check pods
         run: kubectl get pods -n ci-test

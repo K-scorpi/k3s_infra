@@ -102,4 +102,21 @@ jobs:
           find ./kuber/ -name '*.yaml' -exec kubectl apply -f {} \;
 
       - name: Check pods
-        run: kubectl get pods -A -o wide
+        run: |
+          sleep 30
+          echo "🟢 All pods:" 
+          kubectl get pods -A
+
+      - name: Show failed pods if any
+        run: |
+          echo "🔴 Checking for failed or non-running pods..."
+          # Сохраняем список "плохих" pod’ов (не Running и не Succeeded)
+          bad_pods=$(kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded --no-headers 2>/dev/null || true)
+
+          if [ -n "$bad_pods" ]; then
+            echo "❌ Some pods are not running successfully:"
+            echo "$bad_pods"
+            exit 1
+          else
+            echo "✅ All pods are running or succeeded."
+          fi

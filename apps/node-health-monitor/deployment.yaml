@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: node-health-monitor
+  namespace: bots
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: node-health-monitor
+  template:
+    metadata:
+      labels:
+        app: node-health-monitor
+    spec:
+      serviceAccountName: node-health-monitor
+      containers:
+        - name: node-health-monitor
+          image: sharpwoden/node-health-monitor:0.0.1
+          imagePullPolicy: Always
+          env:
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot-secret
+                  key: token
+            - name: TELEGRAM_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot-secret
+                  key: chat_id
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 150m
+              memory: 128Mi

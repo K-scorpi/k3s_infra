@@ -1,9 +1,16 @@
-FROM golang:1.24-alpine AS builder
-WORKDIR /app
-COPY . .
-RUN go mod tidy && go build -o monitor main.go
-
+FROM golang:1.24 AS builder
+WORKDIR /src
+# Копируем модули и скачиваем зависимости
+COPY go.mod go.sum main.go ./
+RUN go mod download
+# Сборка бинарника
+RUN CGO_ENABLED=0 GOOS=linux go build -o /bin/bot .
 FROM alpine:3.20
-WORKDIR /app
-COPY --from=builder /app/monitor .
-CMD ["./monitor"]
+# Базовые утилиты
+RUN apk add --no-cache ca-certificates tzdata
+# Копируем собранный бинарник
+COPY --from=builder /bin/bot /bin/bot
+# Права обычного пользователя
+USER 1000:1000
+# Точка входа
+ENTRYPOINT ["/bin/bot"]

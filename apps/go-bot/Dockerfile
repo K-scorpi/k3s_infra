@@ -4,10 +4,8 @@
 FROM golang:1.24 AS builder
 WORKDIR /src
 # Копируем модули и скачиваем зависимости
-COPY go.mod go.sum ./
+COPY go.mod go.sum main.go ./
 RUN go mod download
-# Копируем весь проект
-COPY . .
 # Сборка бинарника
 RUN CGO_ENABLED=0 GOOS=linux go build -o /bin/bot .
 # -----------------------------

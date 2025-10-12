@@ -87,7 +87,7 @@ jobs:
           sudo cp /etc/rancher/k3s/k3s.yaml $HOME/.kube/config
           sudo chown $(id -u):$(id -g) $HOME/.kube/config
           kubectl get nodes
-          
+
       - name: Create required namespaces
         run: |
           kubectl create namespace minio-system || true
@@ -102,7 +102,7 @@ jobs:
           find ./kuber/ -name '*.yaml' -exec kubectl apply -f {} \;
 
       - name: Wait for pods
-        run: kubectl wait --for=condition=Ready pods --all --namespace -A --timeout=30s
+        run: kubectl wait pods --all --all-namespaces --for=condition=Ready --timeout=45s
 
       - name: Check pods
-        run: kubectl get pods -n ci-test
+        run: kubectl get pods -A -o wide

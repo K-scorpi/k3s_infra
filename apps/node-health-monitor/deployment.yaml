@@ -16,7 +16,7 @@ spec:
       serviceAccountName: node-health-monitor
       containers:
         - name: node-health-monitor
-          image: sharpwoden/node-health-monitor:0.0.2.1
+          image: sharpwoden/node-health-monitor:0.0.2.2
           imagePullPolicy: Always
           env:
             - name: TELEGRAM_BOT_TOKEN

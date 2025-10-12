@@ -86,7 +86,6 @@ jobs:
           mkdir -p $HOME/.kube
           sudo cp /etc/rancher/k3s/k3s.yaml $HOME/.kube/config
           sudo chown $(id -u):$(id -g) $HOME/.kube/config
-          kubectl get nodes
 
       - name: Create required namespaces
         run: |
@@ -103,13 +102,14 @@ jobs:
 
       - name: Check pods
         run: |
-          sleep 30
+          sleep 45
           echo "🟢 All pods:" 
           kubectl get pods -A
 
       - name: Show failed pods if any
         run: |
           echo "🔴 Checking for failed or non-running pods..."
+          sleep 45
           # Сохраняем список "плохих" pod’ов (не Running и не Succeeded)
           bad_pods=$(kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded --no-headers 2>/dev/null || true)
 

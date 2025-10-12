@@ -83,7 +83,10 @@ jobs:
 
       - name: Wait for K3s to be ready
         run: |
-          sudo kubectl wait --for=condition=Ready nodes --all --timeout=120s
+          mkdir -p $HOME/.kube
+          sudo cp /etc/rancher/k3s/k3s.yaml $HOME/.kube/config
+          sudo chown $(id -u):$(id -g) $HOME/.kube/config
+          kubectl get nodes
 
       - name: Deploy manifests
         run: |

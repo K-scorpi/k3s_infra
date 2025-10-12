@@ -90,8 +90,7 @@ jobs:
 
       - name: Deploy manifests
         run: |
-          kubectl create namespace ci-test || true
-          find ./kuber/ -name '*.yaml' | xargs -n 1 kubectl apply -n ci-test -f
+          find ./kuber/ -name '*.yaml' -exec kubectl apply -f {} \;
 
       - name: Wait for pods
         run: kubectl wait --for=condition=Ready pods --all --namespace ci-test --timeout=30s

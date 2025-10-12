@@ -73,3 +73,25 @@ jobs:
                      -print0)
 
           echo "✅ All Kubernetes manifests passed dry-run validation"
+
+  k8s-deploy-test:
+    name: Kubernetes Test Deploy
+    runs-on: ubuntu-latest
+    needs: k8s-validate
+    if: ${{ success() }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+
+      - name: Apply manifests to test namespace
+        run: |
+          echo "🔧 Applying manifests to test namespace..."
+          kubectl create namespace ci-test || true
+          kubectl apply -f ./kuber/ --namespace ci-test --dry-run=client
+          echo "✅ Dry-run deploy completed"

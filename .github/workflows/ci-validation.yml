@@ -87,13 +87,22 @@ jobs:
           sudo cp /etc/rancher/k3s/k3s.yaml $HOME/.kube/config
           sudo chown $(id -u):$(id -g) $HOME/.kube/config
           kubectl get nodes
-
+          
+      - name: Create required namespaces
+        run: |
+          kubectl create namespace minio-system || true
+          kubectl create namespace homer || true
+          kubectl create namespace velero || true
+          kubectl create namespace system-upgrade || true
+          kubectl create namespace monitoring || true
+          # Любые другие namespace, что используются в манифестах
+          
       - name: Deploy manifests
         run: |
           find ./kuber/ -name '*.yaml' -exec kubectl apply -f {} \;
 
       - name: Wait for pods
-        run: kubectl wait --for=condition=Ready pods --all --namespace ci-test --timeout=30s
+        run: kubectl wait --for=condition=Ready pods --all --namespace -A --timeout=30s
 
       - name: Check pods
         run: kubectl get pods -n ci-test

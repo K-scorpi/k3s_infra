@@ -90,11 +90,11 @@ jobs:
 
       - name: Deploy manifests
         run: |
-          sudo kubectl create namespace ci-test || true
-          sudo kubectl apply -f ./kuber/ --namespace ci-test
+          kubectl create namespace ci-test || true
+          kubectl apply -f ./kuber/ --namespace ci-test
 
       - name: Wait for pods
-        run: sudo kubectl wait --for=condition=Ready pods --all --namespace ci-test --timeout=120s
+        run: kubectl wait --for=condition=Ready pods --all --namespace ci-test --timeout=120s
 
       - name: Check pods
-        run: sudo kubectl get pods -n ci-test
+        run: kubectl get pods -n ci-test

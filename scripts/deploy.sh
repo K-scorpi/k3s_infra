@@ -77,9 +77,3 @@ case "${1:-all}" in
     usage
     ;;
 esac
-
-
-kubectl create secret generic telegram-bot-secret-2 \
-  -n bots \
-  --from-literal=token='8341782773:AAEB6unmAxqveRwBSHLVGLBVetoT74wn4Z4' \
-  --from-literal=chat_id='1202444249'

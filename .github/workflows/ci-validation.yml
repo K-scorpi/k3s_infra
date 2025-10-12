@@ -101,8 +101,5 @@ jobs:
         run: |
           find ./kuber/ -name '*.yaml' -exec kubectl apply -f {} \;
 
-      - name: Wait for pods
-        run: kubectl wait pods --all --all-namespaces --for=condition=Ready --timeout=45s
-
       - name: Check pods
         run: kubectl get pods -A -o wide

@@ -1,3 +1,9 @@
 k3s.yaml
 secret/
+.DS_Store/
+.DS_Store*
 .DS_Store
+.venv/
+*_pycache_*
+*.env
+.mypy_cache/

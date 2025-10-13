@@ -1,4 +1,4 @@
-name: CI - Security & Kubernetes Validation
+name: CI - Security, Code Quality & Kubernetes Validation
 
 on:
   push:
@@ -7,6 +7,35 @@ on:
     branches: [ main ]
 
 jobs:
+  python-lint:
+    name: Python Code Quality
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install linting tools
+        run: |
+          python3 -m pip install --upgrade pip
+          pip3 install black isort flake8 pylint mypy
+
+      - name: Copy lint script
+        run: |
+          # Копируем скрипт линтинга в рабочую директорию
+          cat > lint_python.py << 'EOF'
+          # Вставьте сюда содержимое скрипта из предыдущего ответа
+          EOF
+      - name: Run comprehensive linting
+        run: |
+          python3 lint_python.py    
+
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest

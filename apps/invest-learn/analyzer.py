@@ -20,7 +20,6 @@ def analyze_ticker(ticker: str):
         ORDER BY timestamp ASC
         LIMIT 1
     """, engine, params=(ticker,))
-    
     if df.empty:
         return
 
@@ -85,7 +84,15 @@ def analyze_ticker(ticker: str):
             signal = "HOLD"
 
         # Генерация пояснения через LLM
-        meta = {"price": float(row['price']), "reasons": reasons, "signal": signal}
+        meta = {
+            "price": float(row['price']),
+            "sma_5": float(last['sma_5']) if not pd.isna(last['sma_5']) else None,
+            "sma_20": float(last['sma_20']) if not pd.isna(last['sma_20']) else None,
+            "rsi": float(last['rsi']) if not pd.isna(last['rsi']) else None,
+            "macd": float(last['macd']) if not pd.isna(last['macd']) else None,
+            "macd_signal": float(last['macd_signal']) if not pd.isna(last['macd_signal']) else None,
+            "signal": signal
+        }
         
         if signal == "HOLD" and len(reasons) <= 1:
             explanation = "Недостаточно данных для анализа."

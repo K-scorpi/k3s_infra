@@ -33,7 +33,10 @@ jobs:
           EOF
       - name: Run comprehensive linting
         run: |
-          python3 lint_python.py    
+          echo "=== Current directory structure ==="
+          find . -name "*.py" -type f | head -20
+          echo "=== Running lint script ==="
+          python3 lint_python.py --verbose 
 
   security-scan:
     name: Security Scan

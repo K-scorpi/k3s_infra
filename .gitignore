@@ -4,3 +4,5 @@ secret/
 .DS_Store*
 .DS_Store
 .venv/
+*_pycache_*
+*.env

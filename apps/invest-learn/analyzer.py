@@ -4,6 +4,8 @@ import sys
 from datetime import datetime
 import time
 import schedule
+from ta.volatility import BollingerBands, AverageTrueRange
+from ta.volume import VolumeWeightedAveragePrice
 from ta.momentum import RSIIndicator
 from ta.trend import MACD, SMAIndicator
 from sqlalchemy import text
@@ -35,55 +37,80 @@ def analyze_ticker(ticker: str):
         return
 
     for _, row in df.iterrows():
-        # Добавляем текущую цену в историю
         full_prices = pd.concat([hist, pd.DataFrame([{"price": row['price']}])], ignore_index=True)
         
-        # Расчёт индикаторов
+        # --- Основные индикаторы ---
         full_prices['sma_5'] = SMAIndicator(close=full_prices['price'], window=5).sma_indicator()
         full_prices['sma_20'] = SMAIndicator(close=full_prices['price'], window=20).sma_indicator()
         full_prices['rsi'] = RSIIndicator(close=full_prices['price'], window=14).rsi()
-        macd = MACD(close=full_prices['price'])
-        full_prices['macd'] = macd.macd()
-        full_prices['macd_signal'] = macd.macd_signal()
-        
+        macd_obj = MACD(close=full_prices['price'])
+        full_prices['macd'] = macd_obj.macd()
+        full_prices['macd_signal'] = macd_obj.macd_signal()
+
+        # --- Дополнительные индикаторы ---
+        bb = BollingerBands(close=full_prices['price'], window=20, window_dev=2)
+        full_prices['bb_high'] = bb.bollinger_hband()
+        full_prices['bb_low'] = bb.bollinger_lband()
+        full_prices['bb_mid'] = bb.bollinger_mavg()
+        full_prices['atr'] = AverageTrueRange(high=full_prices['price'], low=full_prices['price'], close=full_prices['price'], window=14).average_true_range()
+
         last = full_prices.iloc[-1]
+        prev = full_prices.iloc[-2] if len(full_prices) > 1 else None
+
         reasons = []
         buy_signals = 0
         sell_signals = 0
 
-        # BUY условия
-        if last['price'] > last['sma_5']:
-            reasons.append("цена выше краткосрочной средней")
-            buy_signals += 1
+        # --- Цена и скользящие ---
         if last['price'] > last['sma_20']:
-            reasons.append("восходящий тренд")
+            reasons.append("цена выше 20-дневной SMA — восходящий тренд")
+            buy_signals += 1
+        if last['price'] < last['sma_20']:
+            reasons.append("цена ниже 20-дневной SMA — нисходящий тренд")
+            sell_signals += 1
+
+        # --- RSI ---
         if last['rsi'] < 30:
-            reasons.append("акция перепродана")
+            reasons.append("RSI < 30 — акция перепродана")
             buy_signals += 1
-        if not pd.isna(last['macd']) and last['macd'] > last['macd_signal']:
-            reasons.append("бычий импульс")
-            buy_signals += 1
-
-        # SELL условия
-        if last['rsi'] > 70:
-            reasons.append("акция перекуплена")
-            sell_signals += 1
-        if last['price'] < last['sma_5']:
-            reasons.append("цена ниже краткосрочной средней")
-            sell_signals += 1
-        if not pd.isna(last['macd']) and last['macd'] < last['macd_signal']:
-            reasons.append("медвежий импульс")
+        elif last['rsi'] > 70:
+            reasons.append("RSI > 70 — акция перекуплена")
             sell_signals += 1
 
-        # Решение
-        if buy_signals >= 2:
+        # --- Дивергенс (упрощённо) ---
+        if prev is not None and last['rsi'] < prev['rsi'] and last['price'] > prev['price']:
+            reasons.append("медвежий дивергенс по RSI — возможен разворот вниз")
+            sell_signals += 1
+        elif prev is not None and last['rsi'] > prev['rsi'] and last['price'] < prev['price']:
+            reasons.append("бычий дивергенс по RSI — возможен разворот вверх")
+            buy_signals += 1
+
+        # --- Bollinger Bands ---
+        if last['price'] > last['bb_high']:
+            reasons.append("цена выше верхней полосы Боллинджера — перекупленность")
+            sell_signals += 1
+        elif last['price'] < last['bb_low']:
+            reasons.append("цена ниже нижней полосы Боллинджера — перепроданность")
+            buy_signals += 1
+
+        # --- MACD ---
+        if not pd.isna(last['macd']) and not pd.isna(last['macd_signal']):
+            if last['macd'] > last['macd_signal']:
+                reasons.append("MACD выше сигнальной линии — бычий импульс")
+                buy_signals += 1
+            else:
+                reasons.append("MACD ниже сигнальной линии — медвежий импульс")
+                sell_signals += 1
+
+        # --- Решение ---
+        if buy_signals >= 2 and sell_signals == 0:
             signal = "BUY"
-        elif sell_signals >= 2:
+        elif sell_signals >= 2 and buy_signals == 0:
             signal = "SELL"
         else:
             signal = "HOLD"
 
-        # Генерация пояснения через LLM
+        # --- Метаданные для LLM ---
         meta = {
             "price": float(row['price']),
             "sma_5": float(last['sma_5']) if not pd.isna(last['sma_5']) else None,
@@ -91,7 +118,11 @@ def analyze_ticker(ticker: str):
             "rsi": float(last['rsi']) if not pd.isna(last['rsi']) else None,
             "macd": float(last['macd']) if not pd.isna(last['macd']) else None,
             "macd_signal": float(last['macd_signal']) if not pd.isna(last['macd_signal']) else None,
-            "signal": signal
+            "bb_high": float(last['bb_high']) if not pd.isna(last['bb_high']) else None,
+            "bb_low": float(last['bb_low']) if not pd.isna(last['bb_low']) else None,
+            "atr": float(last['atr']) if not pd.isna(last['atr']) else None,
+            "signal": signal,
+            "reasons": reasons
         }
         
         if signal == "HOLD" and len(reasons) <= 1:

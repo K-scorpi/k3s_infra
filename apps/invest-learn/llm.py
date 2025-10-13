@@ -1,5 +1,5 @@
 # -----------------------------
-# Ollama API
+# llm.py API
 # -----------------------------
 import requests
 import os

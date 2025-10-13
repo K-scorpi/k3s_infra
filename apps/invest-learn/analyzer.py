@@ -1,18 +1,19 @@
 # analyzer.py
 import pandas as pd
+import sys
 from datetime import datetime
 import time
 import schedule
 from ta.momentum import RSIIndicator
 from ta.trend import MACD, SMAIndicator
+from sqlalchemy import text
 from common import get_sqlalchemy_engine, load_tickers
 from llm import explain_signal_with_llm
-from sqlalchemy import text
 
 engine = get_sqlalchemy_engine()
 
 def analyze_ticker(ticker: str):
-    # Получаем все записи без сигнала
+    # Получаем записи без сигнала
     df = pd.read_sql("""
         SELECT id, price FROM quotes 
         WHERE ticker = %s AND signal IS NULL 
@@ -22,7 +23,7 @@ def analyze_ticker(ticker: str):
     if df.empty:
         return
 
-    # Получаем полную историю для расчёта индикаторов
+    # Получаем полную историю цен для расчёта индикаторов
     hist = pd.read_sql("""
         SELECT price FROM quotes 
         WHERE ticker = %s 
@@ -34,9 +35,10 @@ def analyze_ticker(ticker: str):
         return
 
     for _, row in df.iterrows():
+        # Добавляем текущую цену в историю
         full_prices = pd.concat([hist, pd.DataFrame([{"price": row['price']}])], ignore_index=True)
         
-        # Индикаторы
+        # Расчёт индикаторов
         full_prices['sma_5'] = SMAIndicator(close=full_prices['price'], window=5).sma_indicator()
         full_prices['sma_20'] = SMAIndicator(close=full_prices['price'], window=20).sma_indicator()
         full_prices['rsi'] = RSIIndicator(close=full_prices['price'], window=14).rsi()
@@ -62,15 +64,23 @@ def analyze_ticker(ticker: str):
 
         signal = "BUY" if buy_signals >= 2 else "HOLD"
 
-        # Только здесь вызываем LLM
-        meta = {"price": row['price'], "reasons": reasons, "signal": signal}
+        # Генерация пояснения через LLM
+        meta = {"price": float(row['price']), "reasons": reasons, "signal": signal}
         explanation = explain_signal_with_llm(ticker, meta)
 
-        # Обновляем запись
+        # Обновление записи в БД (с приведением типов!)
         with engine.connect() as conn:
             conn.execute(
-                text("UPDATE quotes SET signal = :signal, explanation = :explanation WHERE id = :id"),
-                {"signal": signal, "explanation": explanation, "id": row['id']}
+                text("""
+                    UPDATE quotes 
+                    SET signal = :signal, explanation = :explanation 
+                    WHERE id = :id
+                """),
+                {
+                    "signal": signal,
+                    "explanation": explanation,
+                    "id": int(row['id'])  # ← ключевое: numpy → int
+                }
             )
             conn.commit()
 
@@ -78,17 +88,19 @@ def analyze_ticker(ticker: str):
         print(f"💬 {explanation}\n")
 
 def analyze_all():
-    print(f"\n🔍 Анализ: {datetime.now().strftime('%H:%M:%S')}")
+    print(f"\n🔍 Анализ: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     for ticker in load_tickers():
-        analyze_ticker(ticker)
+        try:
+            analyze_ticker(ticker)
+        except Exception as e:
+            print(f"⚠️ Ошибка при анализе {ticker}: {e}")
 
-# --- Режимы запуска ---
+# --- Запуск ---
 if __name__ == "__main__":
-    import sys
     if len(sys.argv) > 1 and sys.argv[1] == "--once":
         analyze_all()
     else:
-        # По расписанию (например, каждые 2 минуты)
+        # Фоновый режим: анализ каждые 2 минуты
         analyze_all()
         schedule.every(2).minutes.do(analyze_all)
         while True:

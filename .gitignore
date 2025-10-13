@@ -1,3 +1,6 @@
 k3s.yaml
 secret/
+.DS_Store/
+.DS_Store*
 .DS_Store
+.venv/

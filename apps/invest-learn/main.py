@@ -8,6 +8,8 @@ from decimal import Decimal
 import pandas as pd
 from ta.momentum import RSIIndicator
 from ta.trend import MACD, SMAIndicator
+from sqlalchemy import create_engine
+from llm import explain_signal_with_llm
 
 # --- Настройки ---
 DB_CONFIG = {
@@ -17,9 +19,12 @@ DB_CONFIG = {
     "user": "invest_user",
     "password": "secure_password_123"
 }
+
+engine = create_engine(f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}")
+
 TARGET_BOARD = "TQBR"
 TICKERS_FILE = "tickers.txt"
-INTERVAL_MINUTES = 1  # каждые 5 минут
+INTERVAL_MINUTES = 5  # каждые 5 минут
 
 # --- Инициализация БД ---
 def init_db():
@@ -103,52 +108,111 @@ def save_price_with_signal(ticker: str, price: float, signal: str):
 
 # --- Основная задача сбора ---
 def fetch_all_tickers():
-    print(f"\n🕒 Сбор котировок: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"\n🕒 Сбор и анализ: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     tickers = load_tickers()
     for ticker in tickers:
         price = get_moex_price(ticker)
         if price is not None:
-            signal = calculate_signal(ticker, price, window=5)
+            signal, meta = calculate_advanced_signal(ticker, price)
+            explanation = explain_signal_with_llm(ticker, meta)
             save_price_with_signal(ticker, price, signal)
+            print(f"📊 {ticker}: {price} ₽ | {signal}")
+            print(f"💬 {explanation}\n")
         else:
             print(f"⚠️ Пропущен {ticker}")
 
-def calculate_signal(ticker: str, current_price: float, window: int = 5) -> str:
+def calculate_advanced_signal(ticker: str, current_price: float, current_volume: int = 0) -> tuple[str, dict]:
     """
-    Возвращает: 'BUY', 'SELL', 'NO_SIGNAL'
+    Возвращает: (сигнал, метаданные для LLM)
     """
     try:
         conn = psycopg2.connect(**DB_CONFIG)
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT price FROM quotes
-            WHERE ticker = %s
-            ORDER BY timestamp DESC
-            LIMIT %s
-        """, (ticker, window - 1))
-
-        # Преобразуем Decimal → float
-        past_prices = [float(row[0]) for row in cursor.fetchall()]
-        cursor.close()
+        # Получаем последние 50 записей для надёжного расчёта
+        df = pd.read_sql("""
+        SELECT price, timestamp 
+        FROM quotes 
+        WHERE ticker = %s 
+        ORDER BY timestamp ASC
+        """, engine, params=(ticker,))
         conn.close()
 
-        # Добавляем текущую цену (уже float)
-        all_prices = past_prices[::-1] + [current_price]  # хронологический порядок
+        if df.empty:
+            return "NO_DATA", {}
 
-        if len(all_prices) < window:
-            return "NO_SIGNAL"
+        # Добавляем текущую цену как новую строку (пока без timestamp)
+        new_row = pd.DataFrame([{"price": current_price, "timestamp": datetime.utcnow()}])
+        df = pd.concat([df, new_row], ignore_index=True)
 
-        sma = sum(all_prices[-window:]) / window
-        if current_price > sma:
-            return "BUY"
-        elif current_price < sma:
-            return "SELL"
+        # Убедимся, что достаточно данных
+        if len(df) < 20:
+            return "INSUFFICIENT_DATA", {}
+
+        # --- Индикаторы ---
+        df['sma_5'] = SMAIndicator(close=df['price'], window=5).sma_indicator()
+        df['sma_20'] = SMAIndicator(close=df['price'], window=20).sma_indicator()
+        df['rsi'] = RSIIndicator(close=df['price'], window=14).rsi()
+        macd = MACD(close=df['price'])
+        df['macd'] = macd.macd()
+        df['macd_signal'] = macd.macd_signal()
+
+        # Берём последнюю строку
+        last = df.iloc[-1]
+
+        signals = []
+        reasons = []
+
+        # 1. SMA 5 vs цена
+        if last['price'] > last['sma_5']:
+            signals.append("SMA5_BULL")
+            reasons.append("цена выше 5-минутной скользящей средней")
+
+        # 2. SMA 20 (тренд)
+        if last['price'] > last['sma_20']:
+            signals.append("TREND_UP")
+            reasons.append("восходящий тренд (цена выше SMA20)")
+
+        # 3. RSI
+        if last['rsi'] < 30:
+            signals.append("RSI_OVERSOLD")
+            reasons.append("акция перепродана (RSI < 30)")
+        elif last['rsi'] > 70:
+            signals.append("RSI_OVERBOUGHT")
+            reasons.append("акция перекуплена (RSI > 70)")
+
+        # 4. MACD
+        if not pd.isna(last['macd']) and not pd.isna(last['macd_signal']):
+            if last['macd'] > last['macd_signal']:
+                signals.append("MACD_BULL")
+                reasons.append("бычий сигнал MACD")
+
+        # Решение
+        buy_signals = len([s for s in signals if "BULL" in s or "OVERSOLD" in s])
+        sell_signals = len([s for s in signals if "OVERBOUGHT" in s])
+
+        if buy_signals >= 2:
+            signal = "BUY"
+        elif sell_signals >= 1 and "TREND_UP" not in signals:
+            signal = "SELL"
         else:
-            return "HOLD"
+            signal = "HOLD"
+
+        metadata = {
+            "price": float(current_price),
+            "sma_5": float(last['sma_5']) if not pd.isna(last['sma_5']) else None,
+            "sma_20": float(last['sma_20']) if not pd.isna(last['sma_20']) else None,
+            "rsi": float(last['rsi']) if not pd.isna(last['rsi']) else None,
+            "macd": float(last['macd']) if not pd.isna(last['macd']) else None,
+            "macd_signal": float(last['macd_signal']) if not pd.isna(last['macd_signal']) else None,
+            "reasons": reasons,
+            "signal": signal
+        }
+
+        return signal, metadata
 
     except Exception as e:
-        print(f"⚠️ Ошибка расчёта сигнала для {ticker}: {e}")
-        return "NO_SIGNAL"  
+        print(f"⚠️ Ошибка продвинутого анализа для {ticker}: {e}")
+        return "ERROR", {}
+    
 # --- Главный цикл ---
 if __name__ == "__main__":
     init_db()

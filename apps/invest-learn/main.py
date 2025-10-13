@@ -4,6 +4,10 @@ from datetime import datetime
 import schedule
 import time
 import os
+from decimal import Decimal
+import pandas as pd
+from ta.momentum import RSIIndicator
+from ta.trend import MACD, SMAIndicator
 
 # --- Настройки ---
 DB_CONFIG = {
@@ -26,6 +30,7 @@ def init_db():
             id SERIAL PRIMARY KEY,
             ticker TEXT NOT NULL,
             price NUMERIC(10, 4) NOT NULL,
+            signal TEXT,
             timestamp TIMESTAMPTZ DEFAULT NOW()
         );
         CREATE INDEX IF NOT EXISTS idx_ticker_timestamp ON quotes (ticker, timestamp);
@@ -81,32 +86,69 @@ def get_moex_price(ticker: str, target_board: str = TARGET_BOARD) -> float | Non
         return None
 
 # --- Сохранение в БД ---
-def save_price_to_db(ticker: str, price: float):
+def save_price_with_signal(ticker: str, price: float, signal: str):
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO quotes (ticker, price) VALUES (%s, %s)",
-            (ticker, price)
+            "INSERT INTO quotes (ticker, price, signal) VALUES (%s, %s, %s)",
+            (ticker, price, signal)
         )
         conn.commit()
         cursor.close()
         conn.close()
-        print(f"💾 {ticker}: {price} ₽")
+        print(f"- {ticker}: {price} ₽ | {signal}")
     except Exception as e:
         print(f"❌ Ошибка записи в БД для {ticker}: {e}")
 
 # --- Основная задача сбора ---
 def fetch_all_tickers():
-    print(f"\n🕒 Запуск сбора котировок: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"\n🕒 Сбор котировок: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     tickers = load_tickers()
     for ticker in tickers:
         price = get_moex_price(ticker)
         if price is not None:
-            save_price_to_db(ticker, price)
+            signal = calculate_signal(ticker, price, window=5)
+            save_price_with_signal(ticker, price, signal)
         else:
             print(f"⚠️ Пропущен {ticker}")
 
+def calculate_signal(ticker: str, current_price: float, window: int = 5) -> str:
+    """
+    Возвращает: 'BUY', 'SELL', 'NO_SIGNAL'
+    """
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT price FROM quotes
+            WHERE ticker = %s
+            ORDER BY timestamp DESC
+            LIMIT %s
+        """, (ticker, window - 1))
+
+        # Преобразуем Decimal → float
+        past_prices = [float(row[0]) for row in cursor.fetchall()]
+        cursor.close()
+        conn.close()
+
+        # Добавляем текущую цену (уже float)
+        all_prices = past_prices[::-1] + [current_price]  # хронологический порядок
+
+        if len(all_prices) < window:
+            return "NO_SIGNAL"
+
+        sma = sum(all_prices[-window:]) / window
+        if current_price > sma:
+            return "BUY"
+        elif current_price < sma:
+            return "SELL"
+        else:
+            return "HOLD"
+
+    except Exception as e:
+        print(f"⚠️ Ошибка расчёта сигнала для {ticker}: {e}")
+        return "NO_SIGNAL"  
 # --- Главный цикл ---
 if __name__ == "__main__":
     init_db()

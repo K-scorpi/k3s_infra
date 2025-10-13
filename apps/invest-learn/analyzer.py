@@ -50,7 +50,9 @@ def analyze_ticker(ticker: str):
         last = full_prices.iloc[-1]
         reasons = []
         buy_signals = 0
+        sell_signals = 0
 
+        # BUY условия
         if last['price'] > last['sma_5']:
             reasons.append("цена выше краткосрочной средней")
             buy_signals += 1
@@ -63,7 +65,24 @@ def analyze_ticker(ticker: str):
             reasons.append("бычий импульс")
             buy_signals += 1
 
-        signal = "BUY" if buy_signals >= 2 else "HOLD"
+        # SELL условия
+        if last['rsi'] > 70:
+            reasons.append("акция перекуплена")
+            sell_signals += 1
+        if last['price'] < last['sma_5']:
+            reasons.append("цена ниже краткосрочной средней")
+            sell_signals += 1
+        if not pd.isna(last['macd']) and last['macd'] < last['macd_signal']:
+            reasons.append("медвежий импульс")
+            sell_signals += 1
+
+        # Решение
+        if buy_signals >= 2:
+            signal = "BUY"
+        elif sell_signals >= 2:
+            signal = "SELL"
+        else:
+            signal = "HOLD"
 
         # Генерация пояснения через LLM
         meta = {"price": float(row['price']), "reasons": reasons, "signal": signal}

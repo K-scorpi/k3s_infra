@@ -37,7 +37,7 @@ def explain_signal_with_llm(ticker: str, metadata: dict) -> str:
                 "model": "mistralai/mistral-7b-instruct",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.3,
-                "max_tokens": 150
+                "max_tokens": 200
             },
             timeout=15
         )

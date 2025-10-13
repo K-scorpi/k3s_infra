@@ -6,3 +6,4 @@ secret/
 .venv/
 *_pycache_*
 *.env
+.mypy_cache/

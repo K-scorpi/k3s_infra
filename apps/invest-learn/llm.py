@@ -1,12 +1,16 @@
 # -----------------------------
 # llm.py API
 # -----------------------------
-import requests
 import os
+
+import requests
 from dotenv import load_dotenv
+
 load_dotenv()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
+
 def explain_signal_with_llm(ticker: str, metadata: dict) -> str:
     # Если недостаточно данных — не вызываем LLM
     if not metadata.get("reasons"):
@@ -19,9 +23,13 @@ def explain_signal_with_llm(ticker: str, metadata: dict) -> str:
     if metadata.get("rsi") is not None:
         lines.append(f"RSI(14): {metadata['rsi']:.1f}")
     if metadata.get("macd") is not None and metadata.get("macd_signal") is not None:
-        lines.append(f"MACD: {metadata['macd']:.4f}, сигнальная линия: {metadata['macd_signal']:.4f}")
+        lines.append(
+            f"MACD: {metadata['macd']:.4f}, сигнальная линия: {metadata['macd_signal']:.4f}"
+        )
     if metadata.get("bb_high") is not None:
-        lines.append(f"Полосы Боллинджера: верхняя {metadata['bb_high']:.2f}, нижняя {metadata['bb_low']:.2f}")
+        lines.append(
+            f"Полосы Боллинджера: верхняя {metadata['bb_high']:.2f}, нижняя {metadata['bb_low']:.2f}"
+        )
     if metadata.get("atr") is not None:
         lines.append(f"ATR(14): {metadata['atr']:.2f} — мера волатильности")
 
@@ -54,15 +62,15 @@ def explain_signal_with_llm(ticker: str, metadata: dict) -> str:
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
                 "HTTP-Referer": YOUR_SITE_URL,
                 "X-Title": YOUR_APP_NAME,
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
             },
             json={
                 "model": "mistralai/mistral-7b-instruct",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.2,
-                "max_tokens": 200
+                "max_tokens": 200,
             },
-            timeout=15
+            timeout=15,
         )
         if response.status_code == 200:
             return response.json()["choices"][0]["message"]["content"].strip()

@@ -1,27 +1,36 @@
 import requests
-import sqlite3
+import psycopg2
 from datetime import datetime
+import os
 
-# --- Настройки ---
-DB_PATH = "quotes.db"
+# --- Настройки БД (можно вынести в .env позже) ---
+DB_CONFIG = {
+    "host": "localhost",
+    "port": 5432,
+    "database": "invest",
+    "user": "invest_user",
+    "password": "secure_password_123"
+}
+
 TARGET_BOARD = "TQBR"
 
-# --- Инициализация БД ---
+# --- Инициализация таблицы ---
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(**DB_CONFIG)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS quotes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             ticker TEXT NOT NULL,
-            price REAL NOT NULL,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            price NUMERIC(10, 4) NOT NULL,
+            timestamp TIMESTAMPTZ DEFAULT NOW()
         )
     """)
     conn.commit()
+    cursor.close()
     conn.close()
 
-# --- Получение цены с MOEX ---
+# --- Получение цены (без изменений) ---
 def get_moex_price(ticker: str, target_board: str = TARGET_BOARD) -> float | None:
     url = f"https://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker}.json"
     response = requests.get(url)
@@ -52,17 +61,18 @@ def get_moex_price(ticker: str, target_board: str = TARGET_BOARD) -> float | Non
     print(f"❌ Board {target_board} не найден или LAST = null для {ticker}")
     return None
 
-# --- Сохранение цены в БД ---
+# --- Сохранение в PostgreSQL ---
 def save_price_to_db(ticker: str, price: float):
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(**DB_CONFIG)
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO quotes (ticker, price) VALUES (?, ?)",
+        "INSERT INTO quotes (ticker, price) VALUES (%s, %s)",
         (ticker, price)
     )
     conn.commit()
+    cursor.close()
     conn.close()
-    print(f"💾 Сохранено: {ticker} = {price} ₽ в {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"💾 Сохранено в PostgreSQL: {ticker} = {price} ₽ в {datetime.now().isoformat()}")
 
 # --- Основной запуск ---
 if __name__ == "__main__":

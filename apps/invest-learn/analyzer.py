@@ -18,6 +18,7 @@ def analyze_ticker(ticker: str):
         SELECT id, price FROM quotes 
         WHERE ticker = %s AND signal IS NULL 
         ORDER BY timestamp ASC
+        LIMIT 1
     """, engine, params=(ticker,))
     
     if df.empty:
@@ -66,7 +67,11 @@ def analyze_ticker(ticker: str):
 
         # Генерация пояснения через LLM
         meta = {"price": float(row['price']), "reasons": reasons, "signal": signal}
-        explanation = explain_signal_with_llm(ticker, meta)
+        
+        if signal == "HOLD" and len(reasons) <= 1:
+            explanation = "Недостаточно данных для анализа."
+        else:
+            explanation = explain_signal_with_llm(ticker, meta)
 
         # Обновление записи в БД (с приведением типов!)
         with engine.connect() as conn:

@@ -24,9 +24,5 @@ def get_sqlalchemy_engine():
     )
 
 def load_tickers(filename="tickers.txt"):
-    if not os.path.exists(filename):
-        with open(filename, "w") as f:
-            f.write("SBER\nGAZP\nLKOH\nYNDX\nMTSS\nROSN\nTATN\nNVTK\n")
-        return ["SBER", "GAZP", "LKOH", "YNDX", "MTSS", "ROSN", "TATN", "NVTK"]
     with open(filename, "r") as f:
         return [line.strip().upper() for line in f if line.strip()]

@@ -59,6 +59,18 @@ func main() {
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
 
+	monitor := NewMonitor(clientset, bot, adminID)
+
+	// Запускаем мониторинг в отдельной горутине
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if os.Getenv("DISABLE_MONITORING") != "true" {
+		go monitor.Start(ctx)
+	} else {
+		log.Println("⚠️ Мониторинг отключен")
+	}
+
 	for update := range updates {
 		if update.Message == nil && update.CallbackQuery == nil {
 			continue
@@ -131,6 +143,11 @@ func main() {
 				continue
 			}
 			handleRestart(bot, clientset, ctx, chatID, parts[0], parts[1])
+		case "monitor":
+			handleMonitorStatus(bot, chatID, monitor)
+
+		case "alerts":
+			handleAlertsStatus(bot, chatID, monitor)
 
 		case "scale":
 			parts := strings.Fields(args)
@@ -149,11 +166,22 @@ func main() {
 // --- Help + кнопки ---
 func sendHelpWithButtons(bot *tgbotapi.BotAPI, chatID int64, clientset *kubernetes.Clientset, ctx context.Context) {
 	text := `Команды:
+
+*Основные команды:*	
 /status — список узлов
 /getpods [ns|all] — pod-ы
 /logs <ns> <pod> [tail] — логи pod-а
-/restart <ns> <dep> — перезапуск
-/scale <ns> <dep> <replicas> — масштабирование`
+
+*Мониторинг:*
+/monitor - статус мониторинга узлов
+/alerts - активные алерты
+
+*Управление:*
+/restart <ns> <deployment> - перезапуск deployment'а
+/scale <ns> <deployment> <replicas> - масштабирование
+
+*Помощь:*
+/help - показать это сообщение`
 
 	// Соберем список ns для кнопок
 	nss, err := clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
@@ -307,6 +335,61 @@ func getStatusEmoji(ready bool) string {
 		return "🟢"
 	}
 	return "🔴"
+}
+
+func handleMonitorStatus(bot *tgbotapi.BotAPI, chatID int64, monitor *Monitor) {
+	statuses := monitor.GetNodeStatuses()
+
+	var sb strings.Builder
+	sb.WriteString("📊 *Статус мониторинга узлов*\n\n")
+
+	if len(statuses) == 0 {
+		sb.WriteString("ℹ️ Нет данных о узлах\n")
+	} else {
+		for nodeName, status := range statuses {
+			emoji := "🟢"
+			if status.Status != "Ready" {
+				emoji = "🔴"
+			}
+
+			duration := time.Since(status.LastSeen)
+			sb.WriteString(fmt.Sprintf("%s *%s*\n", emoji, nodeName))
+			sb.WriteString(fmt.Sprintf("   Статус: %s\n", status.Status))
+			sb.WriteString(fmt.Sprintf("   Последняя проверка: %s назад\n", formatDurationForAlert(duration)))
+			if status.Notified {
+				sb.WriteString("   ⚠️ Уведомление отправлено\n")
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	sendLong(bot, chatID, sb.String())
+}
+
+// handleAlertsStatus показывает активные алерты
+func handleAlertsStatus(bot *tgbotapi.BotAPI, chatID int64, monitor *Monitor) {
+	statuses := monitor.GetNodeStatuses()
+
+	var sb strings.Builder
+	sb.WriteString("🚨 *Активные алерты*\n\n")
+
+	hasAlerts := false
+	for nodeName, status := range statuses {
+		if status.Notified {
+			hasAlerts = true
+			duration := time.Since(status.LastSeen)
+			sb.WriteString(fmt.Sprintf("🔴 *%s*\n", nodeName))
+			sb.WriteString(fmt.Sprintf("   Проблема: %s\n", status.Status))
+			sb.WriteString(fmt.Sprintf("   Длительность: %s\n", formatDurationForAlert(duration)))
+			sb.WriteString("\n")
+		}
+	}
+
+	if !hasAlerts {
+		sb.WriteString("✅ Активных алертов нет\n")
+	}
+
+	sendLong(bot, chatID, sb.String())
 }
 
 func getNodeMetrics(ctx context.Context, clientset *kubernetes.Clientset) (map[string]struct{ CPU, Memory int64 }, error) {

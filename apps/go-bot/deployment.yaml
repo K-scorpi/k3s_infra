@@ -55,7 +55,7 @@ spec:
       serviceAccountName: telegram-bot-sa
       containers:
         - name: bot
-          image: sharpwoden/telegram-k8s-bot:0.3.0.6
+          image: sharpwoden/telegram-k8s-bot:0.3.0.8
           resources:
             requests:
               memory: "64Mi"

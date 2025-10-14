@@ -31,7 +31,6 @@ jobs:
       - name: Find and lint all Go projects
         run: |
           echo "🔍 Поиск всех Go проектов..."
-          # Ищем все директории с go.mod
           GO_PROJECTS=$(find . -name "go.mod" -type f | sed 's|/go.mod||' | grep -v "vendor\|.git\|node_modules")  
           if [ -z "$GO_PROJECTS" ]; then
             echo "❌ Go проекты не найдены"
@@ -42,11 +41,9 @@ jobs:
           FAILED_PROJECTS=""
           for project in $GO_PROJECTS; do
             echo ""
-            echo "🚀 Проверка проекта: $project"
             echo "=========================================="
             cd "$project"
             if [ ! -f "go.mod" ]; then
-              echo "❌ go.mod не найден в $project, пропускаем..."
               cd - > /dev/null
               continue
             fi

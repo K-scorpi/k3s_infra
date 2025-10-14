@@ -184,16 +184,81 @@ func handleStatus(bot *tgbotapi.BotAPI, clientset *kubernetes.Clientset, ctx con
 	}
 	var sb strings.Builder
 	sb.WriteString("📡 Nodes:\n")
-	for _, n := range nodes.Items {
+	for _, node := range nodes.Items {
 		ready := "❌ NotReady"
-		for _, c := range n.Status.Conditions {
-			if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
-				ready = "✅ Ready"
+		for _, c := range node.Status.Conditions {
+			if c.Type == corev1.NodeReady {
+				if c.Status == corev1.ConditionTrue {
+					ready = "✅ Ready"
+				}
+				break
 			}
 		}
-		sb.WriteString(fmt.Sprintf("- %s — %s\n", n.Name, ready))
+		// Информация о ресурсах
+		allocatable := node.Status.Allocatable
+		capacity := node.Status.Capacity
+		// CPU
+		cpuAlloc := allocatable[corev1.ResourceCPU]
+		cpuCap := capacity[corev1.ResourceCPU]
+
+		// Memory
+		memAlloc := allocatable[corev1.ResourceMemory]
+		memCap := capacity[corev1.ResourceMemory]
+
+		sb.WriteString(fmt.Sprintf("📡 *%s*\n", node.Name))
+		sb.WriteString(fmt.Sprintf("   Статус: %s\n", ready))
+		sb.WriteString(fmt.Sprintf("   OS: %s/%s\n", node.Status.NodeInfo.OperatingSystem, node.Status.NodeInfo.Architecture))
+		sb.WriteString(fmt.Sprintf("   Kubelet: %s\n", node.Status.NodeInfo.KubeletVersion))
+
+		// Использование ресурсов
+		sb.WriteString(fmt.Sprintf("   CPU: %s/%s\n", cpuAlloc.String(), cpuCap.String()))
+		sb.WriteString(fmt.Sprintf("   Memory: %s/%s\n", formatMemory(memAlloc.Value()), formatMemory(memCap.Value())))
+
+		sb.WriteString("\n")
 	}
+
+	// Добавим общую статистику кластера
+	sb.WriteString("📊 *Общая статистика:*\n")
+	sb.WriteString(fmt.Sprintf("   Всего узлов: %d\n", len(nodes.Items)))
+
+	readyNodes := countReadyNodes(nodes.Items)
+	sb.WriteString(fmt.Sprintf("   Готовых узлов: %d\n", readyNodes))
+	sb.WriteString(fmt.Sprintf("   Не готовых: %d\n", len(nodes.Items)-readyNodes))
+
 	sendLong(bot, chatID, sb.String())
+}
+
+// Вспомогательные функции
+func formatMemory(bytes int64) string {
+	const (
+		KB = 1024
+		MB = KB * 1024
+		GB = MB * 1024
+	)
+
+	switch {
+	case bytes >= GB:
+		return fmt.Sprintf("%.2fGB", float64(bytes)/float64(GB))
+	case bytes >= MB:
+		return fmt.Sprintf("%.2fMB", float64(bytes)/float64(MB))
+	case bytes >= KB:
+		return fmt.Sprintf("%.2fKB", float64(bytes)/float64(KB))
+	default:
+		return fmt.Sprintf("%dB", bytes)
+	}
+}
+
+func countReadyNodes(nodes []corev1.Node) int {
+	count := 0
+	for _, node := range nodes {
+		for _, c := range node.Status.Conditions {
+			if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
+				count++
+				break
+			}
+		}
+	}
+	return count
 }
 
 func handleGetPods(bot *tgbotapi.BotAPI, clientset *kubernetes.Clientset, ctx context.Context, chatID int64, ns string) {

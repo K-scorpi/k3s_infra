@@ -7,6 +7,64 @@ on:
     branches: [ main ]
 
 jobs:
+  go-lint-all:
+    name: Go Code Quality (All Projects)
+    runs-on: ubuntu-latest
+  
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+          cache-dependency-path: |
+            **/go.sum
+
+      - name: Install Go tools
+        run: |
+          go install golang.org/x/tools/cmd/goimports@latest
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Find and lint all Go projects
+        run: |
+          echo "🔍 Поиск всех Go проектов..."
+          # Ищем все директории с go.mod
+          GO_PROJECTS=$(find . -name "go.mod" -type f | sed 's|/go.mod||' | grep -v "vendor\|.git\|node_modules")  
+          if [ -z "$GO_PROJECTS" ]; then
+            echo "❌ Go проекты не найдены"
+            exit 1
+          fi
+          echo "📁 Найдены Go проекты:"
+          echo "$GO_PROJECTS"
+          FAILED_PROJECTS=""
+          for project in $GO_PROJECTS; do
+            echo ""
+            echo "🚀 Проверка проекта: $project"
+            echo "=========================================="
+            cd "$project"
+            if [ ! -f "go.mod" ]; then
+              echo "❌ go.mod не найден в $project, пропускаем..."
+              cd - > /dev/null
+              continue
+            fi
+            if ! ../../scripts/lint-go.sh .; then
+              FAILED_PROJECTS="$FAILED_PROJECTS $project"
+            fi
+            cd - > /dev/null
+          done
+          
+          if [ -n "$FAILED_PROJECTS" ]; then
+            echo ""
+            echo "❌ Следующие проекты не прошли проверку:$FAILED_PROJECTS"
+            exit 1
+          else
+            echo ""
+            echo "✅ Все Go проекты прошли проверку успешно!"
+          fi
+
   python-lint:
     name: Python Code Quality
     runs-on: ubuntu-latest

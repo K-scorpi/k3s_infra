@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	metricsv "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
 const MaxMsgLen = 3800
@@ -182,70 +185,300 @@ func handleStatus(bot *tgbotapi.BotAPI, clientset *kubernetes.Clientset, ctx con
 		sendText(bot, chatID, "Ошибка: "+err.Error())
 		return
 	}
+	// Получаем метрики узлов (если установлен metrics-server)
+	nodeMetrics, err := getNodeMetrics(ctx, clientset)
+	if err != nil {
+		log.Printf("⚠️ Metrics server не доступен: %v", err)
+	}
+	// Получаем все поды для подсчета
+	pods, _ := clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	var sb strings.Builder
-	sb.WriteString("📡 Nodes:\n")
+	sb.WriteString("🖥️ *СТАТУС КЛАСТЕРА*\n\n")
+	totalCPU, totalMemory := int64(0), int64(0)
+	usedCPU, usedMemory := int64(0), int64(0)
+	readyNodes := 0
+
 	for _, node := range nodes.Items {
-		ready := "❌ NotReady"
-		for _, c := range node.Status.Conditions {
-			if c.Type == corev1.NodeReady {
-				if c.Status == corev1.ConditionTrue {
-					ready = "✅ Ready"
-				}
-				break
-			}
+		nodeReady, nodeStatus := getNodeStatus(node)
+		if nodeReady {
+			readyNodes++
 		}
-		// Информация о ресурсах
-		allocatable := node.Status.Allocatable
+		// Ресурсы узла
 		capacity := node.Status.Capacity
-		// CPU
-		cpuAlloc := allocatable[corev1.ResourceCPU]
-		cpuCap := capacity[corev1.ResourceCPU]
-
-		// Memory
-		memAlloc := allocatable[corev1.ResourceMemory]
-		memCap := capacity[corev1.ResourceMemory]
-
-		sb.WriteString(fmt.Sprintf("📡 *%s*\n", node.Name))
-		sb.WriteString(fmt.Sprintf("   Статус: %s\n", ready))
-		sb.WriteString(fmt.Sprintf("   OS: %s/%s\n", node.Status.NodeInfo.OperatingSystem, node.Status.NodeInfo.Architecture))
-		sb.WriteString(fmt.Sprintf("   Kubelet: %s\n", node.Status.NodeInfo.KubeletVersion))
+		nodeCPU := capacity.Cpu().MilliValue()
+		nodeMemory := capacity.Memory().Value()
+		totalCPU += nodeCPU
+		totalMemory += nodeMemory
 
 		// Использование ресурсов
-		sb.WriteString(fmt.Sprintf("   CPU: %s/%s\n", cpuAlloc.String(), cpuCap.String()))
-		sb.WriteString(fmt.Sprintf("   Memory: %s/%s\n", formatMemory(memAlloc.Value()), formatMemory(memCap.Value())))
+		cpuUsage, memoryUsage := getNodeUsage(node.Name, nodeMetrics, node, pods.Items)
+		usedCPU += cpuUsage
+		usedMemory += memoryUsage
+		// Подсчет подов на узле
+		nodePods := countPodsOnNode(pods.Items, node.Name)
+		runningPods := countRunningPodsOnNode(pods.Items, node.Name)
+
+		// Вывод информации об узле
+		sb.WriteString(fmt.Sprintf("%s *%s*\n", getStatusEmoji(nodeReady), node.Name))
+		sb.WriteString(fmt.Sprintf("   📊 Статус: %s\n", nodeStatus))
+		sb.WriteString(fmt.Sprintf("   🏷️  OS: %s | Arch: %s\n",
+			node.Status.NodeInfo.OperatingSystem,
+			node.Status.NodeInfo.Architecture))
+
+		// Использование CPU
+		cpuPercent := calculatePercent(cpuUsage, nodeCPU)
+		sb.WriteString(fmt.Sprintf("   🔵 CPU: %s/%s (%d%%) %s\n",
+			formatCPU(cpuUsage),
+			formatCPU(nodeCPU),
+			int(cpuPercent),
+			getProgressBar(cpuPercent, 8)))
+
+		// Использование Memory
+		memoryPercent := calculatePercent(memoryUsage, nodeMemory)
+		sb.WriteString(fmt.Sprintf("   🟠 Memory: %s/%s (%d%%) %s\n",
+			formatMemory(memoryUsage),
+			formatMemory(nodeMemory),
+			int(memoryPercent),
+			getProgressBar(memoryPercent, 8)))
+
+		// Pods
+		sb.WriteString(fmt.Sprintf("   📦 Pods: %d/%d запущено\n", runningPods, nodePods))
+
+		// Внешний IP
+		externalIP := getNodeExternalIP(node)
+		if externalIP != "" {
+			sb.WriteString(fmt.Sprintf("   🌐 IP: %s\n", externalIP))
+		}
+
+		// Возраст узла
+		age := time.Since(node.CreationTimestamp.Time).Round(time.Hour)
+		sb.WriteString(fmt.Sprintf("   ⏰ Возраст: %s\n", formatDuration(age)))
 
 		sb.WriteString("\n")
 	}
 
 	// Добавим общую статистику кластера
-	sb.WriteString("📊 *Общая статистика:*\n")
-	sb.WriteString(fmt.Sprintf("   Всего узлов: %d\n", len(nodes.Items)))
+	sb.WriteString("📈 *ОБЩАЯ СТАТИСТИКА*\n")
+	sb.WriteString(fmt.Sprintf("   🖥️  Всего узлов: %d\n", len(nodes.Items)))
+	sb.WriteString(fmt.Sprintf("   🟢 Готовых: %d\n", readyNodes))
+	sb.WriteString(fmt.Sprintf("   🔴 Не готовых: %d\n", len(nodes.Items)-readyNodes))
 
-	readyNodes := countReadyNodes(nodes.Items)
-	sb.WriteString(fmt.Sprintf("   Готовых узлов: %d\n", readyNodes))
-	sb.WriteString(fmt.Sprintf("   Не готовых: %d\n", len(nodes.Items)-readyNodes))
+	// Общее использование ресурсов
+	totalPods := len(pods.Items)
+	runningPods := countRunningPods(pods.Items)
+	sb.WriteString(fmt.Sprintf("   📦 Pods: %d/%d запущено\n", runningPods, totalPods))
+
+	if totalCPU > 0 && totalMemory > 0 {
+		totalCPUPercent := calculatePercent(usedCPU, totalCPU)
+		totalMemoryPercent := calculatePercent(usedMemory, totalMemory)
+
+		sb.WriteString(fmt.Sprintf("\n💾 *Использование ресурсов:*\n"))
+		sb.WriteString(fmt.Sprintf("   🔵 CPU: %s/%s (%d%%) %s\n",
+			formatCPU(usedCPU),
+			formatCPU(totalCPU),
+			int(totalCPUPercent),
+			getProgressBar(totalCPUPercent, 12)))
+
+		sb.WriteString(fmt.Sprintf("   🟠 Memory: %s/%s (%d%%) %s\n",
+			formatMemory(usedMemory),
+			formatMemory(totalMemory),
+			int(totalMemoryPercent),
+			getProgressBar(totalMemoryPercent, 12)))
+	}
 
 	sendLong(bot, chatID, sb.String())
 }
 
 // Вспомогательные функции
-func formatMemory(bytes int64) string {
-	const (
-		KB = 1024
-		MB = KB * 1024
-		GB = MB * 1024
-	)
-
-	switch {
-	case bytes >= GB:
-		return fmt.Sprintf("%.2fGB", float64(bytes)/float64(GB))
-	case bytes >= MB:
-		return fmt.Sprintf("%.2fMB", float64(bytes)/float64(MB))
-	case bytes >= KB:
-		return fmt.Sprintf("%.2fKB", float64(bytes)/float64(KB))
-	default:
-		return fmt.Sprintf("%dB", bytes)
+func getNodeStatus(node corev1.Node) (bool, string) {
+	for _, cond := range node.Status.Conditions {
+		if cond.Type == corev1.NodeReady {
+			if cond.Status == corev1.ConditionTrue {
+				return true, "Ready"
+			}
+			return false, "Not Ready"
+		}
 	}
+	return false, "Unknown"
+}
+
+func getStatusEmoji(ready bool) string {
+	if ready {
+		return "🟢"
+	}
+	return "🔴"
+}
+
+func getNodeMetrics(ctx context.Context, clientset *kubernetes.Clientset) (map[string]struct{ CPU, Memory int64 }, error) {
+	metrics := make(map[string]struct{ CPU, Memory int64 })
+
+	// Пробуем получить конфигурацию
+	config, err := getK8sConfig()
+	if err != nil {
+		return metrics, err
+	}
+
+	// Создаем клиент для метрик
+	metricsClient, err := metricsv.NewForConfig(config)
+	if err != nil {
+		return metrics, err
+	}
+
+	nodeMetricsList, err := metricsClient.MetricsV1beta1().NodeMetricses().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return metrics, err
+	}
+
+	for _, metric := range nodeMetricsList.Items {
+		metrics[metric.Name] = struct{ CPU, Memory int64 }{
+			CPU:    metric.Usage.Cpu().MilliValue(),
+			Memory: metric.Usage.Memory().Value(),
+		}
+	}
+
+	return metrics, nil
+}
+
+func getK8sConfig() (*rest.Config, error) {
+	// Сначала пробуем in-cluster config (если запущено в поде)
+	config, err := rest.InClusterConfig()
+	if err == nil {
+		return config, nil
+	}
+
+	// Если не в кластере, пробуем kubeconfig из файла
+	home, _ := os.UserHomeDir()
+	kubeconfig := filepath.Join(home, ".kube", "config")
+	if _, err := os.Stat(kubeconfig); err == nil {
+		return clientcmd.BuildConfigFromFlags("", kubeconfig)
+	}
+
+	return nil, fmt.Errorf("не удалось найти конфигурацию Kubernetes")
+}
+
+func getNodeUsage(nodeName string, metrics map[string]struct{ CPU, Memory int64 }, node corev1.Node, pods []corev1.Pod) (int64, int64) {
+	// Если есть метрики - используем их
+	if metric, exists := metrics[nodeName]; exists {
+		return metric.CPU, metric.Memory
+	}
+
+	// Если метрик нет, используем приблизительный расчет на основе requests подов
+	return calculateUsageFromPods(nodeName, pods)
+}
+
+func calculateUsageFromPods(nodeName string, pods []corev1.Pod) (int64, int64) {
+	cpuUsage, memoryUsage := int64(0), int64(0)
+
+	for _, pod := range pods {
+		if pod.Spec.NodeName == nodeName && pod.Status.Phase == corev1.PodRunning {
+			for _, container := range pod.Spec.Containers {
+				if container.Resources.Requests != nil {
+					cpuUsage += container.Resources.Requests.Cpu().MilliValue()
+					memoryUsage += container.Resources.Requests.Memory().Value()
+				}
+			}
+		}
+	}
+
+	return cpuUsage, memoryUsage
+}
+
+func countPodsOnNode(pods []corev1.Pod, nodeName string) int {
+	count := 0
+	for _, pod := range pods {
+		if pod.Spec.NodeName == nodeName {
+			count++
+		}
+	}
+	return count
+}
+
+func countRunningPodsOnNode(pods []corev1.Pod, nodeName string) int {
+	count := 0
+	for _, pod := range pods {
+		if pod.Spec.NodeName == nodeName && pod.Status.Phase == corev1.PodRunning {
+			count++
+		}
+	}
+	return count
+}
+
+func countRunningPods(pods []corev1.Pod) int {
+	count := 0
+	for _, pod := range pods {
+		if pod.Status.Phase == corev1.PodRunning {
+			count++
+		}
+	}
+	return count
+}
+
+func getNodeExternalIP(node corev1.Node) string {
+	for _, addr := range node.Status.Addresses {
+		if addr.Type == corev1.NodeExternalIP {
+			return addr.Address
+		}
+	}
+	// Если нет внешнего IP, используем внутренний
+	for _, addr := range node.Status.Addresses {
+		if addr.Type == corev1.NodeInternalIP {
+			return addr.Address
+		}
+	}
+	return ""
+}
+
+func calculatePercent(used, total int64) float64 {
+	if total == 0 {
+		return 0
+	}
+	return float64(used) / float64(total) * 100
+}
+
+func formatCPU(milliCPU int64) string {
+	if milliCPU >= 1000 {
+		return fmt.Sprintf("%.1f core", float64(milliCPU)/1000)
+	}
+	return fmt.Sprintf("%d m", milliCPU)
+}
+
+func formatMemory(bytes int64) string {
+	const GB = 1024 * 1024 * 1024
+	const MB = 1024 * 1024
+
+	if bytes >= GB {
+		return fmt.Sprintf("%.1fGB", float64(bytes)/float64(GB))
+	}
+	return fmt.Sprintf("%.1fMB", float64(bytes)/float64(MB))
+}
+
+func formatDuration(d time.Duration) string {
+	days := int(d.Hours() / 24)
+	if days > 0 {
+		return fmt.Sprintf("%dд", days)
+	}
+	hours := int(d.Hours())
+	if hours > 0 {
+		return fmt.Sprintf("%dч", hours)
+	}
+	return fmt.Sprintf("%dм", int(d.Minutes()))
+}
+
+func getProgressBar(percent float64, length int) string {
+	filled := int(percent / 100 * float64(length))
+	if filled > length {
+		filled = length
+	}
+	empty := length - filled
+
+	bar := ""
+	for i := 0; i < filled; i++ {
+		bar += "█"
+	}
+	for i := 0; i < empty; i++ {
+		bar += "░"
+	}
+	return bar
 }
 
 func countReadyNodes(nodes []corev1.Node) int {

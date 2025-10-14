@@ -4,12 +4,107 @@ on:
   push:
     branches: [ main, develop ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop ]
 
 jobs:
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      go-changed: ${{ steps.changes.outputs.go }}
+      python-changed: ${{ steps.changes.outputs.python }}
+      docker-changed: ${{ steps.changes.outputs.docker }}
+      k8s-changed: ${{ steps.changes.outputs.k8s }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Get changed files
+        uses: dorny/paths-filter@v2
+        id: changes
+        with:
+          filters: |
+            go:
+              - '**/*.go'
+              - '**/go.mod'
+              - '**/go.sum'
+            python:
+              - '**/*.py'
+              - '**/requirements.txt'
+              - '**/setup.py'
+              - '**/Pipfile'
+              - '**/pyproject.toml'
+            docker:
+              - '**/Dockerfile'
+              - '**/Dockerfile.*'
+              - '**/.dockerignore'
+            k8s:
+              - '**/*.yaml'
+              - '**/*.yml'
+              - '**/kustomization.yaml'
+
+  go-lint-all:
+    name: Go Code Quality (All Projects)
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.go-changed == 'true' }}
+  
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+          cache-dependency-path: |
+            **/go.sum
+
+      - name: Install Go tools
+        run: |
+          go install golang.org/x/tools/cmd/goimports@latest
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Find and lint all Go projects
+        run: |
+          echo "🔍 Поиск всех Go проектов..."
+          GO_PROJECTS=$(find . -name "go.mod" -type f | sed 's|/go.mod||' | grep -v "vendor\|.git\|node_modules")  
+          if [ -z "$GO_PROJECTS" ]; then
+            echo "❌ Go проекты не найдены"
+            exit 1
+          fi
+          echo "📁 Найдены Go проекты:"
+          echo "$GO_PROJECTS"
+          FAILED_PROJECTS=""
+          for project in $GO_PROJECTS; do
+            echo ""
+            echo "=========================================="
+            cd "$project"
+            if [ ! -f "go.mod" ]; then
+              cd - > /dev/null
+              continue
+            fi
+            if ! ../../scripts/lint-go.sh .; then
+              FAILED_PROJECTS="$FAILED_PROJECTS $project"
+            fi
+            cd - > /dev/null
+          done
+          
+          if [ -n "$FAILED_PROJECTS" ]; then
+            echo ""
+            echo "❌ Следующие проекты не прошли проверку:$FAILED_PROJECTS"
+            exit 1
+          else
+            echo ""
+            echo "✅ Все Go проекты прошли проверку успешно!"
+          fi
+
   python-lint:
     name: Python Code Quality
     runs-on: ubuntu-latest
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.python-changed == 'true' }}
     
     steps:
       - name: Checkout code
@@ -37,10 +132,43 @@ jobs:
           find . -name "*.py" -type f | head -20
           echo "=== Running lint script ==="
           python3 lint_python.py --verbose 
+  
+  docker-build-test:
+    name: Docker Build Test
+    runs-on: ubuntu-latest
+    needs: 
+      - detect-changes
+      - go-lint-all
+      - python-lint
+    if: |
+      needs.detect-changes.outputs.docker-changed == 'true' &&
+      (!needs.detect-changes.outputs.go-changed || needs.go-lint-all.result == 'success') &&
+      (!needs.detect-changes.outputs.python-changed || needs.python-lint.result == 'success')
+  
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Test Docker builds
+        run: |
+          echo "🐳 Тестируем сборку Docker образов..."
+          
+          # Простой поиск и сборка
+          for dockerfile in $(find . -name "Dockerfile" | grep -v "vendor\|.git\|node_modules"); do
+            echo "🔨 Сборка: $dockerfile"
+            docker build -q -f "$dockerfile" "$(dirname "$dockerfile")" && \
+              echo "✅ Успешно: $dockerfile" || \
+              (echo "❌ Ошибка: $dockerfile" && exit 1)
+          done
+          
+          echo "🎉 Все Dockerfile собираются успешно!"        
 
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
+    needs: detect-changes
+    # Всегда запускаем security scan, но можно добавить условия если нужно
+    # if: ${{ needs.detect-changes.outputs.go-changed == 'true' || needs.detect-changes.outputs.python-changed == 'true' }}
 
     steps:
       - name: Checkout
@@ -81,6 +209,8 @@ jobs:
   k8s-validate:
     name: Kubernetes Manifest Validation
     runs-on: ubuntu-latest
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.k8s-changed == 'true' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -102,8 +232,17 @@ jobs:
   k3s-deploy-kind:
     name: Kubernetes Deploy on Kind
     runs-on: ubuntu-latest
-    needs: k8s-validate
-    if: ${{ success() }}
+    needs: 
+    - detect-changes
+    - k8s-validate
+    - docker-build-test
+    if: |
+      needs.detect-changes.outputs.k8s-changed == 'true' &&
+      needs.k8s-validate.result == 'success' &&
+      (
+        needs.detect-changes.outputs.docker-changed == 'false' ||
+        (needs.detect-changes.outputs.docker-changed == 'true' && needs.docker-build-test.result == 'success')
+      )
     steps:
       - uses: actions/checkout@v4
 

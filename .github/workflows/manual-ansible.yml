@@ -9,6 +9,9 @@ on:
         type: choice
         options: #написать плейбуки
           - playbooks/setup-servers.yml
+          - playbooks/k3s-health-check.yml
+          - playbooks/disk-cleanup.yml
+          - playbooks/disk-analyze.yml
       force_run:
         description: 'Force run (skip changes detection)'
         required: false

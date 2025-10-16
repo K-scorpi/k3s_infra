@@ -1,0 +1,215 @@
+---
+- name: Disk Space Cleanup and Maintenance
+  hosts: k3s_cluster
+  become: yes
+  vars:
+    # Пороговые значения для очистки (в процентах)
+    cleanup_threshold: 75
+    critical_threshold: 90
+    
+    # Настройки что чистить
+    cleanup_docker: true
+    cleanup_k3s: true
+    cleanup_logs: true
+    cleanup_package_cache: true
+    cleanup_tmp: true
+    
+    # Безопасные лимиты для удаления
+    max_log_days: 14
+    keep_snapshots: 5
+
+  tasks:
+
+    - name: Check current disk usage
+      shell: |
+        echo "=== Disk Usage ==="
+        df -h
+        echo "=== Largest directories ==="
+        du -sh /* 2>/dev/null | sort -hr | head -10
+      register: disk_info
+      changed_when: false
+
+    - name: Display disk information
+      debug:
+        var: disk_info.stdout
+
+    - name: Get root partition usage percentage
+      shell: df / --output=pcent | tail -1 | sed 's/%//'
+      register: root_usage
+
+    - name: Decide if cleanup is needed
+      set_fact:
+        needs_cleanup: "{{ root_usage.stdout | int >= cleanup_threshold }}"
+        critical_cleanup: "{{ root_usage.stdout | int >= critical_threshold }}"
+
+    - name: Show cleanup decision
+      debug:
+        msg: |
+          💾 Disk Usage: {{ root_usage.stdout }}%
+          🧹 Cleanup Needed: {{ needs_cleanup }}
+          🚨 Critical Cleanup: {{ critical_cleanup }}
+
+    - name: Check if Docker is installed
+      shell: which docker || echo "not_found"
+      register: docker_check
+      changed_when: false
+
+    - name: Set Docker installed fact
+      set_fact:
+        docker_installed: "{{ 'not_found' not in docker_check.stdout }}"
+
+    - name: Check if Snap is installed
+      shell: which snap || echo "not_found"
+      register: snap_check
+      changed_when: false
+
+    - name: Set Snap installed fact
+      set_fact:
+        snap_installed: "{{ 'not_found' not in snap_check.stdout }}"
+
+    - block:
+        - name: Clean package cache (APT)
+          shell: |
+            apt-get clean
+            apt-get autoclean
+          when: 
+            - ansible_os_family == "Debian"
+            - cleanup_package_cache
+
+        - name: Clean package cache (YUM)
+          shell: |
+            yum clean all
+          when: 
+            - ansible_os_family == "RedHat"
+            - cleanup_package_cache
+
+        - name: Remove old kernels (keep 2 latest) - Debian/Ubuntu
+          shell: |
+            current_kernel=$(uname -r)
+            dpkg -l | grep 'linux-image' | grep -v "$current_kernel" | grep -v "linux-image-$(uname -r | cut -d- -f1)" | awk '{print $2}' | head -n -2 | xargs -r apt-get purge -y
+          when: 
+            - ansible_os_family == "Debian"
+            - critical_cleanup
+          ignore_errors: yes
+
+        - name: Clean temporary files
+          shell: |
+            # Clean /tmp files older than 30 days
+            find /tmp -type f -atime +30 -delete 2>/dev/null || true
+            find /var/tmp -type f -atime +30 -delete 2>/dev/null || true
+            
+            # Clean user temp files
+            find /home -type f -name "*.tmp" -atime +7 -delete 2>/dev/null || true
+            find /root -type f -name "*.tmp" -atime +7 -delete 2>/dev/null || true
+          when: cleanup_tmp
+
+        - name: Clean system logs
+          shell: |
+            # Use logrotate to force rotation and cleanup
+            logrotate -f /etc/logrotate.conf 2>/dev/null || true
+            
+            # Remove old log files
+            find /var/log -name "*.log.*" -type f -mtime +{{ max_log_days }} -delete 2>/dev/null || true
+            find /var/log -name "*.gz" -type f -mtime +{{ max_log_days }} -delete 2>/dev/null || true
+            find /var/log -name "*.1" -type f -mtime +{{ max_log_days }} -delete 2>/dev/null || true
+            
+            # Clean journal logs
+            journalctl --disk-usage 2>/dev/null || true
+            journalctl --vacuum-time={{ max_log_days }}d 2>/dev/null || true
+          when: cleanup_logs
+          ignore_errors: yes
+
+        - name: Clean Docker system
+          block:
+            - name: Remove unused Docker containers
+              shell: |
+                docker container prune -f
+              when: cleanup_docker
+
+            - name: Remove unused Docker images
+              shell: |
+                docker image prune -a -f
+              when: cleanup_docker
+
+            - name: Remove Docker volumes
+              shell: |
+                docker volume prune -f
+              when: 
+                - cleanup_docker
+                - critical_cleanup
+
+            - name: Remove Docker builder cache
+              shell: |
+                docker builder prune -f
+              when: 
+                - cleanup_docker
+                - critical_cleanup
+          when: 
+            - docker_installed
+            - cleanup_docker
+
+        - name: Clean snap packages (if exists)
+          shell: |
+            # Remove old snap revisions
+            snap list --all 2>/dev/null | awk '/disabled/{print $1, $3}' | while read snapname revision; do
+                snap remove "$snapname" --revision="$revision" 2>/dev/null || true
+            done
+          when: 
+            - snap_installed
+            - critical_cleanup
+          ignore_errors: yes
+
+        - name: Clean thumbnails and cache
+          shell: |
+            find /home -type d -name ".cache" -exec rm -rf {} \; 2>/dev/null || true
+            find /root -type d -name ".cache" -exec rm -rf {} \; 2>/dev/null || true
+            find /home -type d -name ".thumbnails" -exec rm -rf {} \; 2>/dev/null || true
+          when: critical_cleanup
+          ignore_errors: yes
+
+        - name: Clear system caches
+          shell: |
+            sync
+            echo 3 > /proc/sys/vm/drop_caches
+          when: critical_cleanup
+
+      when: needs_cleanup
+
+    - name: Check disk space after cleanup
+      shell: |
+        echo "=== After Cleanup ==="
+        df -h
+        echo "=== Reclaimed Space ==="
+        echo "Root partition:"
+        df / --output=used,avail
+      register: after_cleanup
+      changed_when: false
+
+    - name: Display cleanup results
+      debug:
+        var: after_cleanup.stdout
+
+    - name: Send cleanup summary
+      debug:
+        msg: |
+          🧹 DISK CLEANUP COMPLETE
+          ========================
+          📊 Initial Usage: {{ root_usage.stdout }}%
+          🔧 Cleanup Performed: {{ needs_cleanup | ternary('Yes', 'No - below threshold') }}
+          🚨 Critical Mode: {{ critical_cleanup | ternary('Yes', 'No') }}
+          💾 Packages: {{ cleanup_package_cache | ternary('Cleaned', 'Skipped') }}
+          🐳 Docker: {{ (docker_installed and cleanup_docker) | ternary('Cleaned', 'Skipped') }}
+          📝 Logs: {{ cleanup_logs | ternary('Cleaned', 'Skipped') }}
+          🗑️  Temp: {{ cleanup_tmp | ternary('Cleaned', 'Skipped') }}
+
+    - name: Check if still needs attention
+      shell: df / --output=pcent | tail -1 | sed 's/%//'
+      register: final_usage
+      when: needs_cleanup
+
+    - name: Critical space warning
+      debug:
+        msg: "🚨 CRITICAL: Disk usage still high ({{ final_usage.stdout }}%). Manual intervention required!"
+      when: 
+        - needs_cleanup
+        - final_usage.stdout | int >= critical_threshold

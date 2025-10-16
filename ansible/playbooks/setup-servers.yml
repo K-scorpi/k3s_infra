@@ -14,4 +14,3 @@
     - name: Get system info
       setup:
       register: system_info
-      

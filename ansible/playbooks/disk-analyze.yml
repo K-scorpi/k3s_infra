@@ -1,0 +1,73 @@
+---
+- name: Disk Usage Analysis and Reporting
+  hosts: k3s_cluster
+  become: yes
+
+  tasks:
+    - name: Check Docker installation
+      command: which docker
+      register: docker_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Get disk usage overview
+      shell: df -h
+      register: disk_overview
+      changed_when: false
+
+    - name: Show disk overview
+      debug:
+        var: disk_overview.stdout
+
+    - name: Find large directories
+      shell: du -sh /* 2>/dev/null | sort -hr | head -10
+      register: large_dirs
+      changed_when: false
+
+    - name: Show large directories
+      debug:
+        var: large_dirs.stdout
+
+    - name: Check Docker disk usage
+      shell: docker system df 2>/dev/null || echo "Docker not available"
+      when: docker_check.rc == 0
+      register: docker_usage
+      changed_when: false
+
+    - name: Show Docker usage
+      debug:
+        var: docker_usage.stdout
+      when: docker_check.rc == 0
+
+    - name: Check K3s images
+      shell: k3s crictl images 2>/dev/null | wc -l | xargs echo "K3s images count:"
+      register: k3s_images
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Show K3s images count
+      debug:
+        var: k3s_images.stdout
+
+    - name: Check log directory size
+      shell: |
+        du -sh /var/log/ 2>/dev/null || echo "Logs: not found"
+      register: log_size
+      changed_when: false
+
+    - name: Show log size
+      debug:
+        var: log_size.stdout
+
+    - name: Generate simple recommendations
+      set_fact:
+        cleanup_recommendations: |
+          💡 Recommendations for {{ inventory_hostname }}:
+          - Run: apt-get clean && apt-get autoclean
+          - Run: docker system prune -a -f (if Docker installed)
+          - Run: k3s kubectl delete jobs --field-selector=status.successful=1 --all-namespaces
+          - Clean: /tmp and /var/tmp files older than 30 days
+
+    - name: Show recommendations
+      debug:
+        var: cleanup_recommendations

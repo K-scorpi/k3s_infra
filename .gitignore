@@ -7,3 +7,13 @@ secret/
 *_pycache_*
 *.env
 .mypy_cache/
+
+# Ansible secrets
+ansible/secrets/
+!ansible/secrets/.gitkeep
+
+# Local variables
+ansible/inventories/local/
+*.local.yml
+vars.yml
+ansible/inventories/production/hosts_secret.ini

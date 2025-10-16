@@ -1,0 +1,86 @@
+---
+- name: K3s Cluster Health Check and Maintenance
+  hosts: k3s_cluster
+  become: yes
+  vars:
+    cleanup_threshold: 85  # Процент использования диска для очистки
+
+  tasks:
+    - name: Check K3s service status
+      systemd:
+        name: k3s
+        state: started
+        enabled: yes
+
+    - name: Get K3s node status
+      shell: k3s kubectl get nodes -o wide
+      register: k3s_nodes
+      changed_when: false
+
+    - name: Display node status
+      debug:
+        var: k3s_nodes.stdout
+
+    - name: Check cluster pods status
+      shell: k3s kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded
+      register: failed_pods
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Show failed pods
+      debug:
+        msg: "❌ Failed pods:\n{{ failed_pods.stdout }}"
+      when: failed_pods.stdout != ""
+
+    - name: Check cluster events
+      shell: k3s kubectl get events -A --sort-by='.lastTimestamp' | tail -20
+      register: k8s_events
+      changed_when: false
+
+    - name: Display recent events
+      debug:
+        var: k8s_events.stdout
+
+    - name: Check disk usage for K3s
+      shell: df -h /var/lib/rancher/k3s/ | awk 'NR==2 {print $5}' | sed 's/%//'
+      register: disk_usage
+      changed_when: false
+
+    - name: Cleanup if disk usage high
+      block:
+        - name: Clean completed jobs
+          shell: k3s kubectl delete jobs --field-selector=status.successful=1 -A --ignore-not-found=true
+          when: disk_usage.stdout | int > cleanup_threshold
+
+        - name: Clean failed pods
+          shell: k3s kubectl delete pods --field-selector=status.phase=Failed -A --ignore-not-found=true
+          when: disk_usage.stdout | int > cleanup_threshold
+
+        - name: Docker system prune (if using docker)
+          shell: docker system prune -f
+          when: 
+            - disk_usage.stdout | int > cleanup_threshold
+            - "'docker' in ansible_facts.packages"
+      when: disk_usage.stdout | int > cleanup_threshold
+
+    - name: Check cluster resources
+      shell: |
+        echo "=== Node Resources ==="
+        k3s kubectl top nodes 2>/dev/null || echo "Metrics not available"
+        echo "=== Pod Resources ==="  
+        k3s kubectl top pods -A 2>/dev/null || echo "Metrics not available"
+      register: cluster_resources
+      changed_when: false
+
+    - name: Display cluster resources
+      debug:
+        var: cluster_resources.stdout
+
+    - name: Backup K3s configuration
+      copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: "/tmp/k3s-config-backup-{{ inventory_hostname }}-{{ ansible_date_time.epoch }}.yaml"
+        remote_src: yes
+      delegate_to: "{{ groups.k3s_masters[0] }}"
+      run_once: true
+      

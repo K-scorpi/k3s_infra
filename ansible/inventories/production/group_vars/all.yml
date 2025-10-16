@@ -1,0 +1,9 @@
+---
+# Переменные будут передаваться через --extra-vars
+#deep_host_ip: "{{ deep_host_ip }}"
+#tvldd_vm001_ip: "{{ tvldd_vm001_ip }}"
+#vpsone_ip: "{{ vpsone_ip }}"
+
+# Общие настройки
+ansible_user: "aroot"
+ansible_ssh_port: 2224
